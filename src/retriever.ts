@@ -5,6 +5,7 @@
 
 import type { MemoryEntry, MemoryStore, MemorySearchResult } from "./store.js";
 import type { Embedder } from "./embedder.js";
+import type { MemoryCategory } from "./memory-categories.js";
 import {
   AccessTracker,
   computeEffectiveHalfLife,
@@ -97,6 +98,10 @@ export interface RetrievalConfig {
    *  Queries containing these prefixes (e.g. "proj:AIF") will use BM25-only + mustContain
    *  to avoid semantic false positives from vector search. */
   tagPrefixes: string[];
+  /** Per-category half-life multipliers. Multiplier > 1 = slower decay, < 1 = faster.
+   *  Applied on top of temporal type modifier (dynamic 3× faster).
+   *  Defaults to DEFAULT_CATEGORY_DECAY_MULTIPLIERS. */
+  categoryDecayMultipliers?: Record<MemoryCategory, number>;
 }
 
 export interface RetrievalContext {
@@ -177,6 +182,15 @@ export interface RetrievalDiagnostics {
 // Default Configuration
 // ============================================================================
 
+export const DEFAULT_CATEGORY_DECAY_MULTIPLIERS: Record<MemoryCategory, number> = {
+  profile: 2.0,
+  preferences: 1.5,
+  entities: 1.0,
+  events: 0.4,
+  cases: 0.5,
+  patterns: 1.0,
+};
+
 export const DEFAULT_RETRIEVAL_CONFIG: RetrievalConfig = {
   mode: "hybrid",
   vectorWeight: 0.7,
@@ -197,6 +211,7 @@ export const DEFAULT_RETRIEVAL_CONFIG: RetrievalConfig = {
   reinforcementFactor: 0.5,
   maxHalfLifeMultiplier: 3,
   tagPrefixes: ["proj", "env", "team", "scope"],
+  categoryDecayMultipliers: DEFAULT_CATEGORY_DECAY_MULTIPLIERS,
 };
 
 // ============================================================================
@@ -1460,12 +1475,14 @@ export class MemoryRetriever {
         r.entry.metadata,
       );
 
-      // Dynamic memories decay 3x faster than static ones
       const meta = parseSmartMetadata(r.entry.metadata, r.entry);
+      // Category-based half-life multiplier
+      const catMultiplier = this.config.categoryDecayMultipliers?.[meta.memory_category] ?? 1.0;
+      // Dynamic memories decay 3x faster than static ones
       const baseHL = meta.memory_temporal_type === "dynamic" ? halfLife / 3 : halfLife;
 
       const effectiveHL = computeEffectiveHalfLife(
-        baseHL,
+        baseHL * catMultiplier,
         accessCount,
         lastAccessedAt,
         this.config.reinforcementFactor,
