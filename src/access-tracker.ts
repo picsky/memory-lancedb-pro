@@ -27,6 +27,7 @@ export interface AccessTrackerOptions {
   readonly logger: {
     warn: (...args: unknown[]) => void;
     info?: (...args: unknown[]) => void;
+    error?: (...args: unknown[]) => void;
   };
   readonly debounceMs?: number;
 }
@@ -223,6 +224,7 @@ export class AccessTracker {
   private readonly logger: {
     warn: (...args: unknown[]) => void;
     info?: (...args: unknown[]) => void;
+    error?: (...args: unknown[]) => void;
   };
 
   constructor(options: AccessTrackerOptions) {
@@ -288,7 +290,7 @@ export class AccessTracker {
   }
 
   /**
-   * Tear down the tracker — cancel timers and clear pending state.
+   * Tear down the tracker — cancel timers and flush pending state.
    */
   destroy(): void {
     this.clearTimer();
@@ -296,13 +298,14 @@ export class AccessTracker {
       this.logger.warn(
         `access-tracker: destroying with ${this.pending.size} pending writes — attempting final flush (3s timeout)`,
       );
-      // Clear synchronously BEFORE returning — async flush is best-effort.
+      // Snapshot pending entries BEFORE clearing so the flush has data to write.
+      const snapshot = new Map(this.pending);
       this.pending.clear();
       this._retryCount.clear();
       // Fire-and-forget final flush with a hard 3s timeout.
-      // Route through flush() to avoid concurrent write-backs with any in-flight flush.
+      // Uses the snapshot so that data is available even though this.pending is cleared.
       const flushWithTimeout = Promise.race([
-        this.flush(),
+        this.doFlushFromSnapshot(snapshot),
         new Promise<void>((resolve) => setTimeout(resolve, 3_000)),
       ]);
       void flushWithTimeout.catch(() => {
@@ -353,6 +356,24 @@ export class AccessTracker {
             err,
           );
         }
+      }
+    }
+  }
+
+  /**
+   * Flush a pre-captured snapshot of pending entries.
+   * Used by destroy() to avoid clearing this.pending before the flush runs.
+   * Failures are dropped silently (no retry) since the tracker is shutting down.
+   */
+  private async doFlushFromSnapshot(snapshot: Map<string, number>): Promise<void> {
+    for (const [id, delta] of snapshot) {
+      try {
+        const current = await this.store.getById(id);
+        if (!current) continue;
+        const updatedMeta = buildUpdatedMetadata(current.metadata, delta);
+        await this.store.update(id, { metadata: updatedMeta });
+      } catch {
+        // Best-effort during shutdown — suppress errors.
       }
     }
   }

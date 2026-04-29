@@ -31,6 +31,7 @@ import {
   isUserMdExclusiveMemory,
   type WorkspaceBoundaryConfig,
 } from "./workspace-boundary.js";
+import { clampInt, clamp01 } from "./utils.js";
 
 // ============================================================================
 // Types
@@ -76,16 +77,6 @@ function resolveAgentId(runtimeAgentId: unknown, fallback?: string): string | un
 // ============================================================================
 // Utility Functions
 // ============================================================================
-
-function clampInt(value: number, min: number, max: number): number {
-  if (!Number.isFinite(value)) return min;
-  return Math.min(max, Math.max(min, Math.floor(value)));
-}
-
-function clamp01(value: number, fallback = 0.7): number {
-  if (!Number.isFinite(value)) return fallback;
-  return Math.min(1, Math.max(0, value));
-}
 
 function normalizeInlineText(text: string): string {
   return text.replace(/[\r\n]+/g, " ").replace(/\s+/g, " ").trim();

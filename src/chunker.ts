@@ -68,6 +68,8 @@ export const DEFAULT_CHUNKER_CONFIG: ChunkerConfig = {
   maxLinesPerChunk: 50,
 };
 
+import { clamp } from "./utils.js";
+
 // Sentence ending patterns (English + CJK-ish punctuation)
 const SENTENCE_ENDING = /[.!?。！？]/;
 
@@ -75,23 +77,9 @@ const SENTENCE_ENDING = /[.!?。！？]/;
 // Helpers
 // ============================================================================
 
-function clamp(n: number, lo: number, hi: number): number {
-  return Math.max(lo, Math.min(hi, n));
-}
-
 function countLines(s: string): number {
   // Count \n (treat CRLF as one line break)
   return s.split(/\r\n|\n|\r/).length;
-}
-
-function findLastIndexWithin(text: string, re: RegExp, start: number, end: number): number {
-  // Find last match start index for regex within [start, end).
-  // NOTE: `re` must NOT be global; we will scan manually.
-  let last = -1;
-  for (let i = end - 1; i >= start; i--) {
-    if (re.test(text[i])) return i;
-  }
-  return last;
 }
 
 function findSplitEnd(text: string, start: number, maxEnd: number, minEnd: number, config: ChunkerConfig): number {

@@ -22,6 +22,7 @@ import {
 } from "./smart-metadata.js";
 import { TraceCollector, type RetrievalTrace } from "./retrieval-trace.js";
 import { RetrievalStatsCollector } from "./retrieval-stats.js";
+import { clampInt, clamp01, clamp01WithFloor, cosineSimilarity } from "./utils.js";
 
 // ============================================================================
 // Types & Configuration
@@ -201,21 +202,6 @@ export const DEFAULT_RETRIEVAL_CONFIG: RetrievalConfig = {
 // ============================================================================
 // Utility Functions
 // ============================================================================
-
-function clampInt(value: number, min: number, max: number): number {
-  if (!Number.isFinite(value)) return min;
-  return Math.min(max, Math.max(min, Math.floor(value)));
-}
-
-function clamp01(value: number, fallback: number): number {
-  if (!Number.isFinite(value)) return Number.isFinite(fallback) ? fallback : 0;
-  return Math.min(1, Math.max(0, value));
-}
-
-function clamp01WithFloor(value: number, floor: number): number {
-  const safeFloor = clamp01(floor, 0);
-  return Math.max(safeFloor, clamp01(value, safeFloor));
-}
 
 type TaggedRetrievalError = Error & {
   retrievalFailureStage?: NonNullable<RetrievalDiagnostics["failureStage"]>;
@@ -505,26 +491,6 @@ function parseRerankResponse(
       );
     }
   }
-}
-
-// Cosine similarity for reranking fallback
-function cosineSimilarity(a: number[], b: number[]): number {
-  if (a.length !== b.length) {
-    throw new Error("Vector dimensions must match for cosine similarity");
-  }
-
-  let dotProduct = 0;
-  let normA = 0;
-  let normB = 0;
-
-  for (let i = 0; i < a.length; i++) {
-    dotProduct += a[i] * b[i];
-    normA += a[i] * a[i];
-    normB += b[i] * b[i];
-  }
-
-  const norm = Math.sqrt(normA) * Math.sqrt(normB);
-  return norm === 0 ? 0 : dotProduct / norm;
 }
 
 // ============================================================================
@@ -1515,29 +1481,6 @@ export class MemoryRetriever {
     });
 
     return decayed.sort((a, b) => b.score - a.score);
-  }
-
-  /**
-   * Apply lifecycle-aware score adjustment (decay + tier floors).
-   *
-   * This is intentionally lightweight:
-   * - reads tier/access metadata (if any)
-   * - multiplies scores by max(tierFloor, decayComposite)
-   */
-  private applyLifecycleBoost(results: RetrievalResult[]): RetrievalResult[] {
-    if (!this.decayEngine) return results;
-
-    const now = Date.now();
-    const pairs = results.map(r => {
-      const { memory } = getDecayableFromEntry(r.entry);
-      return { r, memory };
-    });
-
-    const scored = pairs.map(p => ({ memory: p.memory, score: p.r.score }));
-    this.decayEngine.applySearchBoost(scored, now);
-
-    const boosted = pairs.map((p, i) => ({ ...p.r, score: scored[i].score }));
-    return boosted.sort((a, b) => b.score - a.score);
   }
 
   /**

@@ -16,6 +16,7 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { buildSmartMetadata, isMemoryActiveAt, parseSmartMetadata, stringifySmartMetadata } from "./smart-metadata.js";
+import { clampInt } from "./utils.js";
 
 // ============================================================================
 // Types
@@ -75,14 +76,20 @@ export const loadLanceDB = async (): Promise<
   typeof import("@lancedb/lancedb")
 > => {
   if (!lancedbImportPromise) {
-    // Use require() for CommonJS modules on Windows to avoid ESM URL scheme issues
+    // Use require() instead of dynamic import() because @lancedb/lancedb is a
+    // CommonJS module with native bindings. On Windows, dynamic import() can
+    // fail with ERR_UNSUPPORTED_ESM_URL_SCHEME when resolving native .node files
+    // via file:// URLs. require() uses the Node.js module resolution path which
+    // correctly locates platform-specific binaries.
     lancedbImportPromise = Promise.resolve(require("@lancedb/lancedb"));
   }
   try {
     return await lancedbImportPromise;
   } catch (err) {
     throw new Error(
-      `memory-lancedb-pro: failed to load LanceDB. ${String(err)}`,
+      `memory-lancedb-pro: failed to load LanceDB. ` +
+        `Ensure the package is installed: npm install @lancedb/lancedb. ` +
+        `Details: ${String(err)}`,
       { cause: err },
     );
   }
@@ -92,9 +99,18 @@ export const loadLanceDB = async (): Promise<
 // Utility Functions
 // ============================================================================
 
-function clampInt(value: number, min: number, max: number): number {
-  if (!Number.isFinite(value)) return min;
-  return Math.min(max, Math.max(min, Math.floor(value)));
+/**
+ * Strictly validate a scope value against an alphanumeric whitelist.
+ * Scope is used in SQL WHERE clause concatenation — reject anything
+ * that could contain SQL metacharacters.
+ */
+export function validateScopeValue(value: string): string {
+  if (!/^[a-zA-Z0-9._:\-]+$/.test(value)) {
+    throw new Error(
+      `Invalid scope "${value}": must match [a-zA-Z0-9._:-]`,
+    );
+  }
+  return value;
 }
 
 function escapeSqlLiteral(value: string): string {
@@ -623,7 +639,7 @@ export class MemoryStore {
     // Apply scope filter if provided
     if (scopeFilter && scopeFilter.length > 0) {
       const scopeConditions = scopeFilter
-        .map((scope) => `scope = '${escapeSqlLiteral(scope)}'`)
+        .map((scope) => `scope = '${escapeSqlLiteral(validateScopeValue(scope))}'`)
         .join(" OR ");
       query = query.where(`(${scopeConditions}) OR scope IS NULL`); // NULL for backward compatibility
     }
@@ -698,7 +714,7 @@ export class MemoryStore {
       // Apply scope filter if provided
       if (scopeFilter && scopeFilter.length > 0) {
         const scopeConditions = scopeFilter
-          .map((scope) => `scope = '${escapeSqlLiteral(scope)}'`)
+          .map((scope) => `scope = '${escapeSqlLiteral(validateScopeValue(scope))}'`)
           .join(" OR ");
         searchQuery = searchQuery.where(
           `(${scopeConditions}) OR scope IS NULL`,
@@ -752,7 +768,7 @@ export class MemoryStore {
       }
       return this.lexicalFallbackSearch(query, safeLimit, scopeFilter, options);
     } catch (err) {
-      console.warn("BM25 search failed, falling back to empty results:", err);
+      console.warn("BM25 search failed, falling back to lexical search:", err);
       return this.lexicalFallbackSearch(query, safeLimit, scopeFilter, options);
     }
   }
@@ -776,7 +792,7 @@ export class MemoryStore {
 
     if (scopeFilter && scopeFilter.length > 0) {
       const scopeConditions = scopeFilter
-        .map(scope => `scope = '${escapeSqlLiteral(scope)}'`)
+        .map(scope => `scope = '${escapeSqlLiteral(validateScopeValue(scope))}'`)
         .join(" OR ");
       searchQuery = searchQuery.where(`(${scopeConditions}) OR scope IS NULL`);
     }
@@ -900,7 +916,7 @@ export class MemoryStore {
 
     if (scopeFilter && scopeFilter.length > 0) {
       const scopeConditions = scopeFilter
-        .map((scope) => `scope = '${escapeSqlLiteral(scope)}'`)
+        .map((scope) => `scope = '${escapeSqlLiteral(validateScopeValue(scope))}'`)
         .join(" OR ");
       conditions.push(`((${scopeConditions}) OR scope IS NULL)`);
     }
@@ -913,7 +929,9 @@ export class MemoryStore {
       query = query.where(conditions.join(" AND "));
     }
 
-    // Fetch all matching rows (no pre-limit) so app-layer sort is correct across full dataset
+    // Fetch all matching rows (no pre-limit) so app-layer sort is correct across full dataset.
+    // Hard cap to prevent OOM on very large datasets; use a narrower filter if more rows are needed.
+    const LIST_HARD_MAX = 10_000;
     const results = await query
       .select([
         "id",
@@ -925,6 +943,14 @@ export class MemoryStore {
         "metadata",
       ])
       .toArray();
+
+    if (results.length > LIST_HARD_MAX) {
+      console.warn(
+        `memory-lancedb-pro: list() returned ${results.length} rows, capping at ${LIST_HARD_MAX}. ` +
+        `Use scope/category filters to narrow your query.`,
+      );
+      results.length = LIST_HARD_MAX;
+    }
 
     return results
       .map(
@@ -962,7 +988,7 @@ export class MemoryStore {
 
     if (scopeFilter && scopeFilter.length > 0) {
       const scopeConditions = scopeFilter
-        .map((scope) => `scope = '${escapeSqlLiteral(scope)}'`)
+        .map((scope) => `scope = '${escapeSqlLiteral(validateScopeValue(scope))}'`)
         .join(" OR ");
       query = query.where(`((${scopeConditions}) OR scope IS NULL)`);
     }
@@ -1161,7 +1187,7 @@ export class MemoryStore {
 
     if (scopeFilter.length > 0) {
       const scopeConditions = scopeFilter
-        .map((scope) => `scope = '${escapeSqlLiteral(scope)}'`)
+        .map((scope) => `scope = '${escapeSqlLiteral(validateScopeValue(scope))}'`)
         .join(" OR ");
       conditions.push(`(${scopeConditions})`);
     }
@@ -1256,7 +1282,7 @@ export class MemoryStore {
 
     if (scopeFilter && scopeFilter.length > 0) {
       const scopeConditions = scopeFilter
-        .map((scope) => `scope = '${escapeSqlLiteral(scope)}'`)
+        .map((scope) => `scope = '${escapeSqlLiteral(validateScopeValue(scope))}'`)
         .join(" OR ");
       conditions.push(`((${scopeConditions}) OR scope IS NULL)`);
     }

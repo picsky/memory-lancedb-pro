@@ -4,6 +4,7 @@ import {
   type MemoryTier,
 } from "./memory-categories.js";
 import type { DecayableMemory } from "./decay-engine.js";
+import { clamp01, clampCount } from "./utils.js";
 
 type LegacyStoreCategory =
   | "preference"
@@ -74,18 +75,6 @@ export interface LifecycleMemory {
   createdAt: number;
   lastAccessedAt: number;
   temporalType?: "static" | "dynamic";
-}
-
-function clamp01(value: unknown, fallback: number): number {
-  const n = typeof value === "number" ? value : Number(value);
-  if (!Number.isFinite(n)) return fallback;
-  return Math.min(1, Math.max(0, n));
-}
-
-function clampCount(value: unknown, fallback = 0): number {
-  const n = typeof value === "number" ? value : Number(value);
-  if (!Number.isFinite(n) || n < 0) return fallback;
-  return Math.floor(n);
 }
 
 function normalizeTier(value: unknown): MemoryTier {

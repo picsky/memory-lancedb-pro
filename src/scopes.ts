@@ -151,6 +151,10 @@ export class MemoryScopeManager implements ScopeManager {
   }
 
   private validateConfiguration(): void {
+    this.validateConfigurationWithLogger({ warn: (msg: string) => console.warn(msg) });
+  }
+
+  private validateConfigurationWithLogger(logger: { warn(msg: string): void }): void {
     // Validate default scope exists in definitions
     if (!this.config.definitions[this.config.default]) {
       throw new Error(`Default scope '${this.config.default}' not found in definitions`);
@@ -168,7 +172,7 @@ export class MemoryScopeManager implements ScopeManager {
       }
       for (const scope of scopes) {
         if (!this.config.definitions[scope] && !this.isBuiltInScope(scope)) {
-          console.warn(`Agent '${agentId}' has access to undefined scope '${scope}'`);
+          logger.warn(`Agent '${agentId}' has access to undefined scope '${scope}'`);
         }
       }
     }
@@ -386,21 +390,21 @@ export class MemoryScopeManager implements ScopeManager {
       },
     };
 
-    // Suppress warnings until validation succeeds
-    const originalWarn = console.warn;
+    // Validate on the new config first; if it fails, revert to previous
+    // Collect warnings via a local logger instead of overriding global console.warn
     const warnings: string[] = [];
-    console.warn = (msg: string) => warnings.push(msg);
+    const localLogger = {
+      warn: (msg: string) => warnings.push(msg),
+    };
 
     this.config = next;
     try {
-      this.validateConfiguration();
+      this.validateConfigurationWithLogger(localLogger);
       // Emit warnings only after successful validation
-      warnings.forEach(w => originalWarn(w));
+      warnings.forEach(w => console.warn(w));
     } catch (err) {
       this.config = previous;
       throw err;
-    } finally {
-      console.warn = originalWarn;
     }
   }
 

@@ -21,6 +21,7 @@
  */
 
 import type { MemoryEntry } from "./store.js";
+import { cosineSimilarity } from "./utils.js";
 
 // ============================================================================
 // Types
@@ -78,34 +79,6 @@ export interface CompactionResult {
   memoriesCreated: number;
   /** Whether this was a dry run */
   dryRun: boolean;
-}
-
-// ============================================================================
-// Math helpers
-// ============================================================================
-
-/** Dot product of two equal-length vectors. */
-function dot(a: number[], b: number[]): number {
-  let s = 0;
-  for (let i = 0; i < a.length; i++) s += a[i] * b[i];
-  return s;
-}
-
-/** L2 norm of a vector. */
-function norm(v: number[]): number {
-  return Math.sqrt(dot(v, v));
-}
-
-/**
- * Cosine similarity in [0, 1].
- * Returns 0 if either vector has zero norm (avoids NaN).
- */
-export function cosineSimilarity(a: number[], b: number[]): number {
-  if (a.length === 0 || a.length !== b.length) return 0;
-  const na = norm(a);
-  const nb = norm(b);
-  if (na === 0 || nb === 0) return 0;
-  return Math.max(0, Math.min(1, dot(a, b) / (na * nb)));
 }
 
 // ============================================================================
@@ -205,16 +178,21 @@ export function buildMergedEntry(
     Math.max(...members.map((m) => m.importance)),
   );
 
-  // --- category: plurality vote ---
+  // --- category: plurality vote, ties broken by highest importance member ---
   const counts = new Map<string, number>();
+  // Track the max importance per category for tie-breaking
+  const maxImportance = new Map<string, number>();
   for (const m of members) {
     counts.set(m.category, (counts.get(m.category) ?? 0) + 1);
+    maxImportance.set(m.category, Math.max(maxImportance.get(m.category) ?? 0, m.importance));
   }
   let category: MemoryEntry["category"] = "other";
   let best = 0;
+  let bestImportance = 0;
   for (const [cat, count] of counts) {
-    if (count > best) {
+    if (count > best || (count === best && (maxImportance.get(cat) ?? 0) > bestImportance)) {
       best = count;
+      bestImportance = maxImportance.get(cat) ?? 0;
       category = cat as MemoryEntry["category"];
     }
   }

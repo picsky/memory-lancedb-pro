@@ -3,6 +3,7 @@ import type { LlmClient } from "./llm-client.js";
 import type { CandidateMemory, MemoryCategory } from "./memory-categories.js";
 import type { MemorySearchResult, MemoryStore } from "./store.js";
 import { parseSmartMetadata } from "./smart-metadata.js";
+import { cosineSimilarity, clamp01, clampPositiveInt } from "./utils.js";
 
 export interface AdmissionWeights {
   utility: number;
@@ -220,18 +221,6 @@ function parseAdmissionControlPreset(raw: unknown): AdmissionControlPreset {
   }
 }
 
-function clamp01(value: unknown, fallback: number): number {
-  const n = typeof value === "number" ? value : Number(value);
-  if (!Number.isFinite(n)) return fallback;
-  return Math.min(1, Math.max(0, n));
-}
-
-function clampPositiveInt(value: unknown, fallback: number, max: number): number {
-  const n = typeof value === "number" ? value : Number(value);
-  if (!Number.isFinite(n) || n <= 0) return fallback;
-  return Math.min(max, Math.max(1, Math.floor(n)));
-}
-
 function normalizeWeights(raw: unknown, defaults: AdmissionWeights): AdmissionWeights {
   if (!raw || typeof raw !== "object") {
     return { ...defaults };
@@ -434,28 +423,6 @@ function splitSupportSpans(conversationText: string): string[] {
     }
   }
   return Array.from(spans);
-}
-
-function cosineSimilarity(left: number[], right: number[]): number {
-  if (!Array.isArray(left) || !Array.isArray(right) || left.length === 0 || right.length === 0) {
-    return 0;
-  }
-
-  const size = Math.min(left.length, right.length);
-  let dot = 0;
-  let leftNorm = 0;
-  let rightNorm = 0;
-
-  for (let i = 0; i < size; i++) {
-    const l = Number(left[i]) || 0;
-    const r = Number(right[i]) || 0;
-    dot += l * r;
-    leftNorm += l * l;
-    rightNorm += r * r;
-  }
-
-  if (leftNorm === 0 || rightNorm === 0) return 0;
-  return dot / (Math.sqrt(leftNorm) * Math.sqrt(rightNorm));
 }
 
 function buildUtilityPrompt(candidate: CandidateMemory, conversationText: string): string {

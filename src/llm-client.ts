@@ -158,6 +158,45 @@ function repairCommonJson(text: string): string {
   return result;
 }
 
+/**
+ * Attempt to repair and parse malformed LLM JSON.
+ * Returns the parsed object on success, or null with a descriptive error.
+ */
+function tryRepairJson<T>(
+  jsonStr: string,
+  label: string,
+  model: string,
+  log: (msg: string) => void,
+): { parsed: T | null; error: string | null } {
+  const repairedJsonStr = repairCommonJson(jsonStr);
+  if (repairedJsonStr === jsonStr) {
+    // No repair was possible or needed — caller already tried JSON.parse
+    return {
+      parsed: null,
+      error: null, // signal "no repair applied" so caller logs original parse error
+    };
+  }
+
+  try {
+    const repaired = JSON.parse(repairedJsonStr) as T;
+    // Verify the result is actually an object (not a primitive or null)
+    if (typeof repaired !== "object" || repaired === null || Array.isArray(repaired)) {
+      throw new Error(
+        `repair produced non-object: ${Array.isArray(repaired) ? "array" : typeof repaired}`,
+      );
+    }
+    log(
+      `memory-lancedb-pro: llm-client [${label}] recovered malformed JSON via heuristic repair (jsonChars=${jsonStr.length})`,
+    );
+    return { parsed: repaired, error: null };
+  } catch (repairErr) {
+    const error =
+      `memory-lancedb-pro: llm-client [${label}] JSON.parse failed; repair failed: ${repairErr instanceof Error ? repairErr.message : String(repairErr)} (jsonChars=${jsonStr.length}, jsonPreview=${JSON.stringify(previewText(jsonStr))})`;
+    log(error);
+    return { parsed: null, error };
+  }
+}
+
 function looksLikeSseResponse(bodyText: string): boolean {
   const trimmed = bodyText.trimStart();
   return trimmed.startsWith("event:") || trimmed.startsWith("data:");
@@ -228,24 +267,15 @@ function createApiKeyClient(config: LlmClientConfig, log: (msg: string) => void,
         try {
           return JSON.parse(jsonStr) as T;
         } catch (err) {
-          const repairedJsonStr = repairCommonJson(jsonStr);
-          if (repairedJsonStr !== jsonStr) {
-            try {
-              const repaired = JSON.parse(repairedJsonStr) as T;
-              log(
-                `memory-lancedb-pro: llm-client [${label}] recovered malformed JSON via heuristic repair (jsonChars=${jsonStr.length})`,
-              );
-              return repaired;
-            } catch (repairErr) {
-              lastError =
-                `memory-lancedb-pro: llm-client [${label}] JSON.parse failed: ${err instanceof Error ? err.message : String(err)}; repair failed: ${repairErr instanceof Error ? repairErr.message : String(repairErr)} (jsonChars=${jsonStr.length}, jsonPreview=${JSON.stringify(previewText(jsonStr))})`;
-              log(lastError);
-              return null;
-            }
+          const { parsed, error } = tryRepairJson<T>(jsonStr, label, config.model, log);
+          if (parsed) return parsed;
+          if (error) {
+            lastError = error;
+          } else {
+            lastError =
+              `memory-lancedb-pro: llm-client [${label}] JSON.parse failed: ${err instanceof Error ? err.message : String(err)} (jsonChars=${jsonStr.length}, jsonPreview=${JSON.stringify(previewText(jsonStr))})`;
+            log(lastError);
           }
-          lastError =
-            `memory-lancedb-pro: llm-client [${label}] JSON.parse failed: ${err instanceof Error ? err.message : String(err)} (jsonChars=${jsonStr.length}, jsonPreview=${JSON.stringify(previewText(jsonStr))})`;
-          log(lastError);
           return null;
         }
       } catch (err) {
@@ -376,24 +406,15 @@ function createOauthClient(config: LlmClientConfig, log: (msg: string) => void, 
           try {
             return JSON.parse(jsonStr) as T;
           } catch (err) {
-            const repairedJsonStr = repairCommonJson(jsonStr);
-            if (repairedJsonStr !== jsonStr) {
-              try {
-                const repaired = JSON.parse(repairedJsonStr) as T;
-                log(
-                  `memory-lancedb-pro: llm-client [${label}] recovered malformed OAuth JSON via heuristic repair (jsonChars=${jsonStr.length})`,
-                );
-                return repaired;
-              } catch (repairErr) {
-                lastError =
-                  `memory-lancedb-pro: llm-client [${label}] OAuth JSON.parse failed: ${err instanceof Error ? err.message : String(err)}; repair failed: ${repairErr instanceof Error ? repairErr.message : String(repairErr)} (jsonChars=${jsonStr.length}, jsonPreview=${JSON.stringify(previewText(jsonStr))})`;
-                log(lastError);
-                return null;
-              }
+            const { parsed, error } = tryRepairJson<T>(jsonStr, label, config.model, log);
+            if (parsed) return parsed;
+            if (error) {
+              lastError = error;
+            } else {
+              lastError =
+                `memory-lancedb-pro: llm-client [${label}] OAuth JSON.parse failed: ${err instanceof Error ? err.message : String(err)} (jsonChars=${jsonStr.length}, jsonPreview=${JSON.stringify(previewText(jsonStr))})`;
+              log(lastError);
             }
-            lastError =
-              `memory-lancedb-pro: llm-client [${label}] OAuth JSON.parse failed: ${err instanceof Error ? err.message : String(err)} (jsonChars=${jsonStr.length}, jsonPreview=${JSON.stringify(previewText(jsonStr))})`;
-            log(lastError);
             return null;
           }
         } finally {

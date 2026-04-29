@@ -155,6 +155,42 @@ interface EmbeddingCapabilities {
   dimensionsField: string | null;
 }
 
+// ============================================================================
+// Embedding Request/Response Types
+// ============================================================================
+
+/**
+ * Payload sent to the OpenAI-compatible embeddings endpoint.
+ * Provider-specific fields (task, normalized, dimensions, etc.) are
+ * injected dynamically based on the detected provider profile.
+ */
+interface EmbeddingRequestPayload {
+  model: string;
+  input: string | string[];
+  encoding_format?: "float";
+  normalized?: boolean;
+  task?: string;
+  input_type?: string;
+  dimensions?: number;
+  output_dimension?: number;
+  [key: string]: unknown;
+}
+
+/**
+ * Single embedding item returned by the embeddings endpoint.
+ */
+interface EmbeddingResponseItem {
+  embedding: number[];
+  index?: number;
+}
+
+/**
+ * OpenAI-compatible embedding response shape.
+ */
+interface EmbeddingResponse {
+  data: EmbeddingResponseItem[];
+}
+
 // Known embedding model dimensions
 const EMBEDDING_DIMENSIONS: Record<string, number> = {
   "text-embedding-3-small": 1536,
@@ -597,7 +633,7 @@ export class Embedder {
    * See: https://github.com/CortexReach/memory-lancedb-pro/issues/620
    * Fix: https://github.com/CortexReach/memory-lancedb-pro/issues/629
    */
-  private async embedWithNativeFetch(payload: any, signal?: AbortSignal): Promise<any> {
+  private async embedWithNativeFetch(payload: EmbeddingRequestPayload, signal?: AbortSignal): Promise<EmbeddingResponse> {
     if (!this._baseURL) {
       throw new Error("embedWithNativeFetch requires a baseURL");
     }
@@ -689,7 +725,7 @@ export class Embedder {
    * because AbortController does not reliably abort Ollama's HTTP connections
    * through the SDK's HTTP client on Node.js.
    */
-  private async embedWithRetry(payload: any, signal?: AbortSignal): Promise<any> {
+  private async embedWithRetry(payload: EmbeddingRequestPayload, signal?: AbortSignal): Promise<EmbeddingResponse> {
     // Use native fetch for Ollama to ensure proper AbortController support
     if (this.isOllamaProvider()) {
       try {
@@ -746,7 +782,7 @@ export class Embedder {
   }
 
   /** Wrap a single embedding operation with a global timeout via AbortSignal. */
-  private withTimeout<T>(promiseFactory: (signal: AbortSignal) => Promise<T>, _label: string, externalSignal?: AbortSignal): Promise<T> {
+  private withTimeout<T>(promiseFactory: (signal: AbortSignal) => Promise<T>, externalSignal?: AbortSignal): Promise<T> {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), EMBED_TIMEOUT_MS);
 
@@ -796,11 +832,11 @@ export class Embedder {
   // --------------------------------------------------------------------------
 
   async embedQuery(text: string, signal?: AbortSignal): Promise<number[]> {
-    return this.withTimeout((sig) => this.embedSingle(text, this._taskQuery, 0, sig), "embedQuery", signal);
+    return this.withTimeout((sig) => this.embedSingle(text, this._taskQuery, 0, sig), signal);
   }
 
   async embedPassage(text: string, signal?: AbortSignal): Promise<number[]> {
-    return this.withTimeout((sig) => this.embedSingle(text, this._taskPassage, 0, sig), "embedPassage", signal);
+    return this.withTimeout((sig) => this.embedSingle(text, this._taskPassage, 0, sig), signal);
   }
 
   // Note: embedBatchQuery/embedBatchPassage are NOT wrapped with withTimeout because
@@ -830,8 +866,8 @@ export class Embedder {
     }
   }
 
-  private buildPayload(input: string | string[], task?: string): any {
-    const payload: any = {
+  private buildPayload(input: string | string[], task?: string): EmbeddingRequestPayload {
+    const payload: EmbeddingRequestPayload = {
       model: this.model,
       input,
     };
