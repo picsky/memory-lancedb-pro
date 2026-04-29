@@ -64,6 +64,7 @@ import { createLlmClient } from "./src/llm-client.js";
 import { createDecayEngine, DEFAULT_DECAY_CONFIG } from "./src/decay-engine.js";
 import { createTierManager, DEFAULT_TIER_CONFIG } from "./src/tier-manager.js";
 import { createMemoryUpgrader } from "./src/memory-upgrader.js";
+import { MetricsCollector } from "./src/metrics-collector.js";
 import {
   buildSmartMetadata,
   parseSmartMetadata,
@@ -1791,6 +1792,11 @@ function _initPluginState(api: OpenClawPluginApi): PluginSingletonState {
   );
   const scopeManager = createScopeManager(config.scopes);
 
+  // Unified metrics collector — bridges retrieval, admission, storage, embedding, compaction
+  const metricsCollector = new MetricsCollector();
+  retriever.setStatsCollector(metricsCollector as any);
+  metricsCollector.setRetrievalStatsCollector(retriever.getStatsCollector());
+
   const clawteamScopes = parseClawteamScopes(process.env.CLAWTEAM_MEMORY_SCOPE);
   if (clawteamScopes.length > 0) {
     applyClawteamScopes(scopeManager, clawteamScopes);
@@ -1852,6 +1858,9 @@ function _initPluginState(api: OpenClawPluginApi): PluginSingletonState {
         noiseBank,
       });
 
+      // Wire metrics collector to admission controller via smart extractor
+      smartExtractor.setMetricsRecorder(metricsCollector);
+
       (isCliMode() ? api.logger.debug : api.logger.info)(
         "memory-lancedb-pro: smart extraction enabled (LLM model: "
         + llmModel
@@ -1905,6 +1914,7 @@ function _initPluginState(api: OpenClawPluginApi): PluginSingletonState {
     autoCaptureSeenTextCount,
     autoCapturePendingIngressTexts,
     autoCaptureRecentTexts,
+    metricsCollector,
   };
 }
 
@@ -1952,6 +1962,7 @@ const memoryLanceDBProPlugin = {
       autoCaptureSeenTextCount,
       autoCapturePendingIngressTexts,
       autoCaptureRecentTexts,
+      metricsCollector,
     } = _singletonState;
 
 
@@ -2264,6 +2275,7 @@ const memoryLanceDBProPlugin = {
         workspaceDir: getDefaultWorkspaceDir(),
         mdMirror,
         workspaceBoundary: config.workspaceBoundary,
+        metricsCollector,
       },
       {
         enableManagementTools: config.enableManagementTools,

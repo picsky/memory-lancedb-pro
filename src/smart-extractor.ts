@@ -1563,6 +1563,13 @@ export class SmartExtractor {
       );
     }
   }
+
+  /** Attach a metrics recorder to the internal admission controller. */
+  setMetricsRecorder(metrics: import("./metrics-collector.js").MetricsCollector | null): void {
+    if (this.admissionController) {
+      this.admissionController.setMetricsRecorder(metrics);
+    }
+  }
 }
 
 // ============================================================================

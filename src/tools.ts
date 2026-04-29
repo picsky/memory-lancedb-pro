@@ -57,6 +57,8 @@ export type MdMirrorWriter = (
   meta?: { source?: string; agentId?: string },
 ) => Promise<void>;
 
+import type { MetricsCollector } from "./metrics-collector.js";
+
 interface ToolContext {
   retriever: MemoryRetriever;
   store: MemoryStore;
@@ -66,6 +68,8 @@ interface ToolContext {
   workspaceDir?: string;
   mdMirror?: MdMirrorWriter | null;
   workspaceBoundary?: WorkspaceBoundaryConfig;
+  /** Optional unified metrics collector for cross-subsystem metrics. */
+  metricsCollector?: MetricsCollector;
 }
 
 function resolveAgentId(runtimeAgentId: unknown, fallback?: string): string | undefined {
@@ -1537,6 +1541,66 @@ export function registerMemoryStatsTool(
               for (const ds of retrievalStats.topDropStages) {
                 textLines.push(`    \u2022 ${ds.name}: ${ds.totalDropped} dropped`);
               }
+            }
+          }
+
+          // Include unified metrics from MetricsCollector if available
+          const metrics = context.metricsCollector?.getMetrics();
+          if (metrics) {
+            // Admission stats
+            const adm = metrics.admission;
+            if (adm.totalEvaluations > 0) {
+              textLines.push(
+                ``,
+                `Admission Quality (last ${adm.totalEvaluations} evaluations):`,
+                `  \u2022 Admitted: ${adm.admitted}`,
+                `  \u2022 Passed to dedup: ${adm.passedToDedup}`,
+                `  \u2022 Rejected: ${adm.rejected}`,
+                `  \u2022 Avg score: ${adm.avgScore}`,
+                `  \u2022 Avg latency: ${adm.avgLatencyMs}ms (P95: ${adm.p95LatencyMs}ms)`,
+                `  \u2022 LLM calls: ${adm.llmCalls} (${adm.llmFailures} failed)`,
+              );
+            }
+
+            // Storage stats
+            const sto = metrics.storage;
+            if (sto.totalWrites + sto.totalUpdates + sto.totalDeletes > 0) {
+              textLines.push(
+                ``,
+                `Storage Performance:`,
+                `  \u2022 Writes: ${sto.totalWrites} (avg ${sto.avgWriteLatencyMs}ms)`,
+                `  \u2022 Updates: ${sto.totalUpdates} (avg ${sto.avgUpdateLatencyMs}ms)`,
+                `  \u2022 Deletes: ${sto.totalDeletes} (avg ${sto.avgDeleteLatencyMs}ms)`,
+                `  \u2022 Lock contentions: ${sto.lockContentions}`,
+                `  \u2022 Update rollbacks: ${sto.updateRollbacks}`,
+              );
+            }
+
+            // Embedding stats
+            const emb = metrics.embedding;
+            if (emb.totalCalls > 0) {
+              textLines.push(
+                ``,
+                `Embedding Performance:`,
+                `  \u2022 Total calls: ${emb.totalCalls}`,
+                `  \u2022 Cache hit rate: ${emb.cacheHitRate}`,
+                `  \u2022 Avg latency: ${emb.avgLatencyMs}ms (P95: ${emb.p95LatencyMs}ms)`,
+                `  \u2022 Timeouts: ${emb.timeouts}, Errors: ${emb.errors}`,
+              );
+            }
+
+            // Compaction stats
+            const cmp = metrics.compaction;
+            if (cmp.totalRuns > 0) {
+              textLines.push(
+                ``,
+                `Compaction Activity:`,
+                `  \u2022 Runs: ${cmp.totalRuns}`,
+                `  \u2022 Scanned: ${cmp.totalScanned}`,
+                `  \u2022 Clusters: ${cmp.totalClusters}`,
+                `  \u2022 Deleted: ${cmp.totalDeleted}, Created: ${cmp.totalCreated}`,
+                `  \u2022 Avg latency: ${cmp.avgLatencyMs}ms`,
+              );
             }
           }
 

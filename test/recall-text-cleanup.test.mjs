@@ -391,6 +391,7 @@ describe("recall text cleanup", () => {
         },
         setAccessTracker() {},
         setStatsCollector() {},
+        getStatsCollector() { return null; },
       };
     };
     const embedderMod = jiti("../src/embedder.js");
@@ -606,6 +607,7 @@ describe("recall text cleanup", () => {
         },
         setAccessTracker() {},
         setStatsCollector() {},
+        getStatsCollector() { return null; },
       };
     };
     const embedderMod = jiti("../src/embedder.js");
@@ -667,6 +669,7 @@ describe("recall text cleanup", () => {
         },
         setAccessTracker() {},
         setStatsCollector() {},
+        getStatsCollector() { return null; },
       };
     };
     const embedderMod = jiti("../src/embedder.js");
@@ -782,6 +785,7 @@ describe("recall text cleanup", () => {
         },
         setAccessTracker() {},
         setStatsCollector() {},
+        getStatsCollector() { return null; },
       };
     };
     const embedderMod = jiti("../src/embedder.js");
@@ -864,6 +868,7 @@ describe("recall text cleanup", () => {
         },
         setAccessTracker() {},
         setStatsCollector() {},
+        getStatsCollector() { return null; },
       };
     };
     const embedderMod = jiti("../src/embedder.js");
@@ -938,6 +943,7 @@ describe("recall text cleanup", () => {
         getConfig() { return { mode: "hybrid" }; },
         setAccessTracker() {},
         setStatsCollector() {},
+        getStatsCollector() { return null; },
       };
     };
     const embedderMod = jiti("../src/embedder.js");

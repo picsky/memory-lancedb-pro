@@ -268,6 +268,7 @@ describe("real before_prompt_build hook", () => {
         },
         setAccessTracker() {},
         setStatsCollector() {},
+        getStatsCollector() { return null; },
       };
     };
 

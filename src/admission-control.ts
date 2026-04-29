@@ -4,6 +4,7 @@ import type { CandidateMemory, MemoryCategory } from "./memory-categories.js";
 import type { MemorySearchResult, MemoryStore } from "./store.js";
 import { parseSmartMetadata } from "./smart-metadata.js";
 import { cosineSimilarity, clamp01, clampPositiveInt } from "./utils.js";
+import type { MetricsCollector } from "./metrics-collector.js";
 
 export interface AdmissionWeights {
   utility: number;
@@ -595,12 +596,19 @@ async function scoreUtility(
 }
 
 export class AdmissionController {
+  private _metrics: MetricsCollector | null = null;
+
   constructor(
     private readonly store: MemoryStore,
     private readonly llm: LlmClient,
     private readonly config: AdmissionControlConfig,
     private readonly debugLog: (msg: string) => void = () => {},
   ) {}
+
+  /** Attach a metrics recorder for admission decision tracking. */
+  setMetricsRecorder(metrics: MetricsCollector | null): void {
+    this._metrics = metrics;
+  }
 
   private async loadRelevantMatches(
     candidate: CandidateMemory,
@@ -638,6 +646,8 @@ export class AdmissionController {
     now?: number;
   }): Promise<AdmissionEvaluation> {
     const now = params.now ?? Date.now();
+    const startMs = Date.now();
+
     const relevantMatches = await this.loadRelevantMatches(
       params.candidate,
       params.candidateVector,
@@ -709,6 +719,26 @@ export class AdmissionController {
     this.debugLog(
       `memory-lancedb-pro: admission-control: decision=${audit.decision} hint=${audit.hint ?? "n/a"} score=${audit.score.toFixed(3)} candidate=${JSON.stringify(params.candidate.abstract.slice(0, 80))}`,
     );
+
+    // Record metrics (synchronous, zero overhead when not attached)
+    if (this._metrics) {
+      const llmCalled = this.config.utilityMode !== "off";
+      const llmSucceeded = llmCalled && utility.reason !== "Utility scoring failed";
+      this._metrics.recordAdmissionEvaluation({
+        decision: hint === "add" ? "admit" : decision,
+        score,
+        latencyMs: Date.now() - startMs,
+        llmCalled,
+        llmSucceeded,
+        featureScores: {
+          utility: featureScores.utility,
+          confidence: featureScores.confidence,
+          novelty: featureScores.novelty,
+          recency: featureScores.recency,
+          typePrior: featureScores.typePrior,
+        },
+      });
+    }
 
     return { decision, hint, audit };
   }
