@@ -18,6 +18,7 @@ import {
   AdmissionController,
   type AdmissionAuditRecord,
   type AdmissionControlConfig,
+  type AdmissionEvaluation,
   type AdmissionRejectionAuditEntry,
 } from "./admission-control.js";
 import {
@@ -421,6 +422,41 @@ export class SmartExtractor {
 
     const createEntries: Omit<import("./store.js").MemoryEntry, "id" | "timestamp">[] = [];
 
+    // Batch admission evaluation for non-profile candidates (optimization: 1 LLM call instead of N).
+    // Profile candidates handle their own admission in handleProfileMerge() since they don't
+    // have vectors available until handleProfileMerge() embeds them.
+    const batchAdmissionMap = new Map<number, AdmissionEvaluation>();
+    if (this.admissionController) {
+      const actualScopeFilter = hasExplicitScopeFilter ? options.scopeFilter : [targetScope];
+      const batchCandidates = processableCandidates.filter(
+        ({ candidate }) => !ALWAYS_MERGE_CATEGORIES.has(candidate.category),
+      );
+      if (batchCandidates.length > 0) {
+        try {
+          const batchParams = batchCandidates.map(({ index, candidate }) => {
+            const vec = precomputedVectors.get(index);
+            return {
+              candidate,
+              candidateVector: vec ?? [],
+              conversationText,
+              scopeFilter: actualScopeFilter,
+            };
+          });
+          const batchResults = await this.admissionController.batchEvaluate(batchParams);
+          for (let i = 0; i < batchCandidates.length; i++) {
+            batchAdmissionMap.set(batchCandidates[i].index, batchResults[i]);
+          }
+          this.log(
+            `memory-pro: smart-extractor: batch admission evaluated for ${batchCandidates.length} candidate(s)`,
+          );
+        } catch (err) {
+          this.log(
+            `memory-pro: smart-extractor: batch admission failed, will fall back to per-candidate evaluation: ${String(err)}`,
+          );
+        }
+      }
+    }
+
     for (const { index, candidate } of processableCandidates) {
       try {
         await this.processCandidate(
@@ -432,6 +468,7 @@ export class SmartExtractor {
           scopeFilter,
           precomputedVectors.get(index),
           createEntries,
+          batchAdmissionMap.get(index),
         );
       } catch (err) {
         this.log(
@@ -663,6 +700,7 @@ export class SmartExtractor {
     scopeFilter?: string[],
     precomputedVector?: number[],
     createEntries?: Omit<import("./store.js").MemoryEntry, "id" | "timestamp">[],
+    batchAdmissionResult?: AdmissionEvaluation,
   ): Promise<void> {
     // Profile always merges (skip dedup — admission control still applies)
     if (ALWAYS_MERGE_CATEGORIES.has(candidate.category)) {
@@ -696,14 +734,19 @@ export class SmartExtractor {
     }
 
     // Admission control gate (before dedup)
-    const admission = this.admissionController
-      ? await this.admissionController.evaluate({
-          candidate,
-          candidateVector: vector,
-          conversationText,
-          scopeFilter: scopeFilter ?? [targetScope],
-        })
-      : undefined;
+    // Use pre-computed batch result if available (avoids redundant evaluate() call),
+    // otherwise fall back to per-candidate evaluation.
+    const actualScopeFilter = scopeFilter ?? [targetScope];
+    const admission = batchAdmissionResult ?? (
+      this.admissionController
+        ? await this.admissionController.evaluate({
+            candidate,
+            candidateVector: vector,
+            conversationText,
+            scopeFilter: actualScopeFilter,
+          })
+        : undefined
+    );
 
     if (admission?.decision === "reject") {
       stats.rejected = (stats.rejected ?? 0) + 1;
@@ -715,7 +758,7 @@ export class SmartExtractor {
         conversationText,
         sessionKey,
         targetScope,
-        scopeFilter ?? [targetScope],
+        actualScopeFilter,
         admission.audit as AdmissionAuditRecord & { decision: "reject" },
       );
       return;

@@ -455,6 +455,43 @@ Return JSON only:
 }`;
 }
 
+function buildBatchUtilityPrompt(
+  candidates: CandidateMemory[],
+  conversationText: string,
+): string {
+  const excerpt =
+    conversationText.length > 3000
+      ? conversationText.slice(-3000)
+      : conversationText;
+
+  const candidateList = candidates
+    .map(
+      (c, i) =>
+        `${i + 1}. Category: ${c.category}\n   Abstract: ${c.abstract}\n   Overview: ${c.overview}\n   Content: ${c.content}`,
+    )
+    .join("\n\n");
+
+  return `Evaluate whether each of these candidate memories is worth keeping for future cross-session interactions.
+
+Conversation excerpt:
+${excerpt}
+
+Candidates:
+${candidateList}
+
+Score each candidate's future usefulness on a 0.0-1.0 scale.
+Return a JSON array with one entry per candidate, in the same order.
+
+Use higher scores for durable preferences, profile facts, reusable procedures, and long-lived project/entity state.
+Use lower scores for one-off chatter, low-signal situational remarks, thin restatements, and low-value transient details.
+
+Return JSON array only:
+[
+  {"index": 1, "utility": 0.8, "reason": "short explanation"},
+  {"index": 2, "utility": 0.3, "reason": "short explanation"}
+]`;
+}
+
 function buildReason(details: {
   decision: "reject" | "pass_to_dedup";
   hint?: "add" | "update_or_merge";
@@ -595,6 +632,42 @@ async function scoreUtility(
   };
 }
 
+async function scoreBatchUtility(
+  llm: LlmClient,
+  mode: AdmissionControlConfig["utilityMode"],
+  candidates: CandidateMemory[],
+  conversationText: string,
+): Promise<Array<{ score: number; reason?: string }>> {
+  if (mode === "off") {
+    return candidates.map(() => ({ score: 0.5, reason: "Utility scoring disabled" }));
+  }
+
+  let response: Array<{ index?: number; utility?: number; reason?: string }> | null = null;
+  try {
+    response = await llm.completeJson<typeof response>(
+      buildBatchUtilityPrompt(candidates, conversationText),
+      "admission-batch-utility",
+    );
+  } catch {
+    // LLM call failed — fallback to individual scoring
+    return Promise.all(
+      candidates.map((c) => scoreUtility(llm, mode, c, conversationText)),
+    );
+  }
+
+  if (!response || !Array.isArray(response) || response.length !== candidates.length) {
+    // Invalid response shape — fallback to individual scoring
+    return Promise.all(
+      candidates.map((c) => scoreUtility(llm, mode, c, conversationText)),
+    );
+  }
+
+  return response.map((item) => ({
+    score: clamp01(item?.utility, 0.5),
+    reason: typeof item?.reason === "string" ? item.reason.trim() : undefined,
+  }));
+}
+
 export class AdmissionController {
   private _metrics: MetricsCollector | null = null;
 
@@ -644,6 +717,8 @@ export class AdmissionController {
     conversationText: string;
     scopeFilter: string[];
     now?: number;
+    /** Pre-computed utility score from batch scoring. When provided, skips individual LLM call. */
+    precomputedUtility?: { score: number; reason?: string };
   }): Promise<AdmissionEvaluation> {
     const now = params.now ?? Date.now();
     const startMs = Date.now();
@@ -654,12 +729,14 @@ export class AdmissionController {
       params.scopeFilter,
     );
 
-    const utility = await scoreUtility(
-      this.llm,
-      this.config.utilityMode,
-      params.candidate,
-      params.conversationText,
-    );
+    const utility = params.precomputedUtility
+      ? params.precomputedUtility
+      : await scoreUtility(
+          this.llm,
+          this.config.utilityMode,
+          params.candidate,
+          params.conversationText,
+        );
     const confidence = scoreConfidenceSupport(params.candidate, params.conversationText);
     const novelty = scoreNoveltyFromMatches(params.candidateVector, relevantMatches);
     const recency = scoreRecencyGap(now, relevantMatches, this.config.recency.halfLifeDays);
@@ -741,5 +818,124 @@ export class AdmissionController {
     }
 
     return { decision, hint, audit };
+  }
+
+  /**
+   * Batch-evaluate multiple candidates in a single LLM call.
+   * Uses scoreBatchUtility() to score all candidates' utility at once,
+   * then evaluates each candidate with its pre-computed utility score.
+   */
+  async batchEvaluate(paramsArray: Array<{
+    candidate: CandidateMemory;
+    candidateVector: number[];
+    conversationText: string;
+    scopeFilter: string[];
+    now?: number;
+  }>): Promise<AdmissionEvaluation[]> {
+    if (paramsArray.length === 0) return [];
+
+    // Batch score utility for all candidates in one LLM call
+    const utilityScores = await scoreBatchUtility(
+      this.llm,
+      this.config.utilityMode,
+      paramsArray.map((p) => p.candidate),
+      paramsArray[0].conversationText,
+    );
+
+    // Evaluate each candidate with its pre-computed utility score
+    return Promise.all(
+      paramsArray.map(async (params, i) => {
+        const utility = utilityScores[i];
+        const now = params.now ?? Date.now();
+        const startMs = Date.now();
+
+        const relevantMatches = await this.loadRelevantMatches(
+          params.candidate,
+          params.candidateVector,
+          params.scopeFilter,
+        );
+
+        const confidence = scoreConfidenceSupport(params.candidate, params.conversationText);
+        const novelty = scoreNoveltyFromMatches(params.candidateVector, relevantMatches);
+        const recency = scoreRecencyGap(now, relevantMatches, this.config.recency.halfLifeDays);
+        const typePrior = scoreTypePrior(params.candidate.category, this.config.typePriors);
+
+        const featureScores: AdmissionFeatureScores = {
+          utility: utility.score,
+          confidence: confidence.score,
+          novelty: novelty.score,
+          recency,
+          typePrior,
+        };
+
+        const score =
+          (featureScores.utility * this.config.weights.utility) +
+          (featureScores.confidence * this.config.weights.confidence) +
+          (featureScores.novelty * this.config.weights.novelty) +
+          (featureScores.recency * this.config.weights.recency) +
+          (featureScores.typePrior * this.config.weights.typePrior);
+
+        const decision = score < this.config.rejectThreshold ? "reject" : "pass_to_dedup";
+        const hint =
+          decision === "reject"
+            ? undefined
+            : score >= this.config.admitThreshold && novelty.maxSimilarity < 0.55
+              ? "add"
+              : "update_or_merge";
+
+        const reason = buildReason({
+          decision,
+          hint,
+          score,
+          rejectThreshold: this.config.rejectThreshold,
+          maxSimilarity: novelty.maxSimilarity,
+          utilityReason: utility.reason,
+        });
+
+        const audit: AdmissionAuditRecord = {
+          version: "amac-v1",
+          decision,
+          hint,
+          score,
+          reason,
+          utility_reason: utility.reason,
+          thresholds: {
+            reject: this.config.rejectThreshold,
+            admit: this.config.admitThreshold,
+          },
+          weights: this.config.weights,
+          feature_scores: featureScores,
+          matched_existing_memory_ids: novelty.matchedIds,
+          compared_existing_memory_ids: novelty.comparedIds,
+          max_similarity: novelty.maxSimilarity,
+          evaluated_at: now,
+        };
+
+        this.debugLog(
+          `memory-lancedb-pro: admission-control: decision=${audit.decision} hint=${audit.hint ?? "n/a"} score=${audit.score.toFixed(3)} candidate=${JSON.stringify(params.candidate.abstract.slice(0, 80))}`,
+        );
+
+        if (this._metrics) {
+          const llmCalled = this.config.utilityMode !== "off";
+          const llmSucceeded = llmCalled && utility.reason !== "Utility scoring failed";
+          this._metrics.recordAdmissionEvaluation({
+            decision: hint === "add" ? "admit" : decision,
+            score,
+            latencyMs: Date.now() - startMs,
+            llmCalled,
+            llmSucceeded,
+            featureScores: {
+              utility: featureScores.utility,
+              confidence: featureScores.confidence,
+              novelty: featureScores.novelty,
+              recency: featureScores.recency,
+              typePrior: featureScores.typePrior,
+            },
+          });
+        }
+
+        return { decision, hint, audit };
+      }),
+    );
   }
 }
