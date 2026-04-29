@@ -1,0 +1,236 @@
+{
+  "benchmarkVersion": "1.0",
+  "timestamp": "2026-04-29T09:31:03.136Z",
+  "seedCount": 20,
+  "queryCount": 15,
+  "k": 5,
+  "aggregate": {
+    "avgPrecisionAtK": 0.32,
+    "avgRecallAtK": 0.956,
+    "avgMRR": 1,
+    "avgNDCGAtK": 0.955,
+    "idealFirstPct": 0.933,
+    "passPct": 0
+  },
+  "cases": [
+    {
+      "name": "tea preference",
+      "precisionAtK": 0.2,
+      "recallAtK": 1,
+      "reciprocalRank": 1,
+      "ndcgAtK": 1,
+      "firstIsIdeal": true,
+      "missing": [],
+      "unexpected": [
+        "mem-0009-health-vegan",
+        "mem-0002-coffee-dislike",
+        "mem-0003-ts-plugin",
+        "mem-0006-git-rebase"
+      ]
+    },
+    {
+      "name": "coffee dislike",
+      "precisionAtK": 0.2,
+      "recallAtK": 1,
+      "reciprocalRank": 1,
+      "ndcgAtK": 1,
+      "firstIsIdeal": true,
+      "missing": [],
+      "unexpected": [
+        "mem-0001-tea-pref",
+        "mem-0009-health-vegan",
+        "mem-0003-ts-plugin",
+        "mem-0006-git-rebase"
+      ]
+    },
+    {
+      "name": "TypeScript plugin",
+      "precisionAtK": 0.2,
+      "recallAtK": 1,
+      "reciprocalRank": 1,
+      "ndcgAtK": 1,
+      "firstIsIdeal": true,
+      "missing": [],
+      "unexpected": [
+        "mem-0009-health-vegan",
+        "mem-0001-tea-pref",
+        "mem-0006-git-rebase",
+        "mem-0002-coffee-dislike"
+      ]
+    },
+    {
+      "name": "Python ML",
+      "precisionAtK": 0.2,
+      "recallAtK": 1,
+      "reciprocalRank": 1,
+      "ndcgAtK": 1,
+      "firstIsIdeal": true,
+      "missing": [],
+      "unexpected": [
+        "mem-0013-python-api",
+        "mem-0020-ai-model",
+        "mem-0006-git-rebase",
+        "mem-0003-ts-plugin"
+      ]
+    },
+    {
+      "name": "meeting schedule",
+      "precisionAtK": 0.6,
+      "recallAtK": 1,
+      "reciprocalRank": 1,
+      "ndcgAtK": 1,
+      "firstIsIdeal": true,
+      "missing": [],
+      "unexpected": [
+        "mem-0003-ts-plugin",
+        "mem-0009-health-vegan"
+      ]
+    },
+    {
+      "name": "git workflow",
+      "precisionAtK": 0.4,
+      "recallAtK": 1,
+      "reciprocalRank": 1,
+      "ndcgAtK": 1,
+      "firstIsIdeal": true,
+      "missing": [],
+      "unexpected": [
+        "mem-0007-api-design",
+        "mem-0003-ts-plugin",
+        "mem-0009-health-vegan"
+      ]
+    },
+    {
+      "name": "API design",
+      "precisionAtK": 0.4,
+      "recallAtK": 1,
+      "reciprocalRank": 1,
+      "ndcgAtK": 1,
+      "firstIsIdeal": true,
+      "missing": [],
+      "unexpected": [
+        "mem-0011-ui-frontend",
+        "mem-0019-git-branch",
+        "mem-0003-ts-plugin"
+      ]
+    },
+    {
+      "name": "office location",
+      "precisionAtK": 0.2,
+      "recallAtK": 1,
+      "reciprocalRank": 1,
+      "ndcgAtK": 1,
+      "firstIsIdeal": true,
+      "missing": [],
+      "unexpected": [
+        "mem-0003-ts-plugin",
+        "mem-0009-health-vegan",
+        "mem-0001-tea-pref",
+        "mem-0006-git-rebase"
+      ]
+    },
+    {
+      "name": "diet health",
+      "precisionAtK": 0.2,
+      "recallAtK": 0.333,
+      "reciprocalRank": 1,
+      "ndcgAtK": 0.469,
+      "firstIsIdeal": true,
+      "missing": [
+        "mem-0018-diet-lactose",
+        "mem-0002-coffee-dislike"
+      ],
+      "unexpected": [
+        "mem-0003-ts-plugin",
+        "mem-0001-tea-pref",
+        "mem-0007-api-design",
+        "mem-0019-git-branch"
+      ]
+    },
+    {
+      "name": "database infrastructure",
+      "precisionAtK": 0.4,
+      "recallAtK": 1,
+      "reciprocalRank": 1,
+      "ndcgAtK": 1,
+      "firstIsIdeal": false,
+      "missing": [],
+      "unexpected": [
+        "mem-0003-ts-plugin",
+        "mem-0009-health-vegan",
+        "mem-0001-tea-pref"
+      ]
+    },
+    {
+      "name": "UI design",
+      "precisionAtK": 0.2,
+      "recallAtK": 1,
+      "reciprocalRank": 1,
+      "ndcgAtK": 1,
+      "firstIsIdeal": true,
+      "missing": [],
+      "unexpected": [
+        "mem-0007-api-design",
+        "mem-0003-ts-plugin",
+        "mem-0019-git-branch",
+        "mem-0006-git-rebase"
+      ]
+    },
+    {
+      "name": "testing framework",
+      "precisionAtK": 0.4,
+      "recallAtK": 1,
+      "reciprocalRank": 1,
+      "ndcgAtK": 1,
+      "firstIsIdeal": true,
+      "missing": [],
+      "unexpected": [
+        "mem-0014-office-shanghai",
+        "mem-0006-git-rebase",
+        "mem-0009-health-vegan"
+      ]
+    },
+    {
+      "name": "AI model selection",
+      "precisionAtK": 0.2,
+      "recallAtK": 1,
+      "reciprocalRank": 1,
+      "ndcgAtK": 1,
+      "firstIsIdeal": true,
+      "missing": [],
+      "unexpected": [
+        "mem-0014-office-shanghai",
+        "mem-0004-python-ml",
+        "mem-0006-git-rebase",
+        "mem-0011-ui-frontend"
+      ]
+    },
+    {
+      "name": "cross-category: health+diet",
+      "precisionAtK": 0.6,
+      "recallAtK": 1,
+      "reciprocalRank": 1,
+      "ndcgAtK": 1,
+      "firstIsIdeal": true,
+      "missing": [],
+      "unexpected": [
+        "mem-0003-ts-plugin",
+        "mem-0001-tea-pref"
+      ]
+    },
+    {
+      "name": "cross-category: git+PR",
+      "precisionAtK": 0.4,
+      "recallAtK": 1,
+      "reciprocalRank": 1,
+      "ndcgAtK": 0.85,
+      "firstIsIdeal": true,
+      "missing": [],
+      "unexpected": [
+        "mem-0012-schedule-review",
+        "mem-0007-api-design",
+        "mem-0003-ts-plugin"
+      ]
+    }
+  ]
+}
