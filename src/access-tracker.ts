@@ -208,9 +208,9 @@ export function computeEffectiveHalfLife(
  *
  * `recordAccess()` is synchronous (Map update only, no I/O). Pending deltas
  * accumulate until `flush()` is called (or by a future scheduled callback).
- * On flush, each pending entry is read via `store.getById()`, its metadata
- * is merged with the accumulated access delta, and written back via
- * `store.update()`.
+ * On flush, all pending entries are read in a single batch query via
+ * `store.batchGetById()`, their metadata is merged in JS, then written
+ * back in a single lock acquisition via `store.bulkPatchMetadata()`.
  */
 export class AccessTracker {
   private readonly pending: Map<string, number> = new Map();
@@ -325,38 +325,66 @@ export class AccessTracker {
     const batch = new Map(this.pending);
     this.pending.clear();
 
-    for (const [id, delta] of batch) {
-      try {
-        const current = await this.store.getById(id);
-        if (!current) {
-          // ID not found — memory was deleted or outside current scope.
-          // Do NOT retry or warn; just drop silently and clear any retry counter.
-          this._retryCount.delete(id);
-          continue;
-        }
+    // Step 1: Batch-read all pending entries in a single query
+    const ids = [...batch.keys()];
+    const existingEntries = await this.store.batchGetById(ids);
+    const entryMap = new Map(existingEntries.map(e => [e.id, e]));
 
-        const updatedMeta = buildUpdatedMetadata(current.metadata, delta);
-        await this.store.update(id, { metadata: updatedMeta });
-        this._retryCount.delete(id); // success — clear retry counter
-      } catch (err) {
-        const retryCount = (this._retryCount.get(id) ?? 0) + 1;
-        if (retryCount > this._maxRetries) {
-          // Exceeded max retries — drop and log error.
+    // Step 2: Build metadata patches for entries that exist
+    const patches: Array<{ id: string; patch: Record<string, unknown> }> = [];
+    const notFoundIds = new Set<string>();
+
+    for (const [id, delta] of batch) {
+      const entry = entryMap.get(id);
+      if (!entry) {
+        // ID not found — memory was deleted or outside scope.
+        // Drop silently and clear retry counter.
+        this._retryCount.delete(id);
+        notFoundIds.add(id);
+        continue;
+      }
+
+      const updatedMeta = buildUpdatedMetadata(entry.metadata, delta);
+      patches.push({ id, patch: { metadata: updatedMeta } });
+    }
+
+    // Step 3: Batch-write in a single lock acquisition
+    if (patches.length > 0) {
+      try {
+        const result = await this.store.bulkPatchMetadata(patches);
+        // Clear retry counters for all successfully written entries
+        for (const id of result.success) {
           this._retryCount.delete(id);
-          this.logger.error?.(
-            `access-tracker: dropping ${id.slice(0, 8)} after ${retryCount} failed retries`,
-          );
-        } else {
-          this._retryCount.set(id, retryCount);
-          // Requeue: merge new delta with pending (safe because _retryCount is now independent,
-          // so delta represents "unflushed retry" only, not accumulated retry amplification).
-          this.pending.set(id, (this.pending.get(id) ?? 0) + delta);
-          this.logger.warn(
-            `access-tracker: write-back failed for ${id.slice(0, 8)} (attempt ${retryCount}/${this._maxRetries}):`,
-            err,
-          );
+        }
+        // Handle failures (requeue with retry)
+        for (const { id, error } of result.failed) {
+          this._handleWriteBackFailure(id, batch.get(id)!, error);
+        }
+      } catch (err) {
+        // Entire bulk operation failed — requeue ALL pending entries
+        for (const [id, delta] of batch) {
+          if (!notFoundIds.has(id)) {
+            this._handleWriteBackFailure(id, delta, String(err));
+          }
         }
       }
+    }
+  }
+
+  private _handleWriteBackFailure(id: string, delta: number, error: string): void {
+    const retryCount = (this._retryCount.get(id) ?? 0) + 1;
+    if (retryCount > this._maxRetries) {
+      this._retryCount.delete(id);
+      this.logger.error?.(
+        `access-tracker: dropping ${id.slice(0, 8)} after ${retryCount} failed retries`,
+      );
+    } else {
+      this._retryCount.set(id, retryCount);
+      this.pending.set(id, (this.pending.get(id) ?? 0) + delta);
+      this.logger.warn(
+        `access-tracker: write-back failed for ${id.slice(0, 8)} (attempt ${retryCount}/${this._maxRetries}):`,
+        error,
+      );
     }
   }
 
@@ -366,12 +394,26 @@ export class AccessTracker {
    * Failures are dropped silently (no retry) since the tracker is shutting down.
    */
   private async doFlushFromSnapshot(snapshot: Map<string, number>): Promise<void> {
+    if (snapshot.size === 0) return;
+
+    // Batch-read all snapshot entries
+    const ids = [...snapshot.keys()];
+    const existingEntries = await this.store.batchGetById(ids);
+    const entryMap = new Map(existingEntries.map(e => [e.id, e]));
+
+    // Build patches
+    const patches: Array<{ id: string; patch: Record<string, unknown> }> = [];
     for (const [id, delta] of snapshot) {
+      const entry = entryMap.get(id);
+      if (!entry) continue;
+      const updatedMeta = buildUpdatedMetadata(entry.metadata, delta);
+      patches.push({ id, patch: { metadata: updatedMeta } });
+    }
+
+    // Batch-write in single lock acquisition (best-effort)
+    if (patches.length > 0) {
       try {
-        const current = await this.store.getById(id);
-        if (!current) continue;
-        const updatedMeta = buildUpdatedMetadata(current.metadata, delta);
-        await this.store.update(id, { metadata: updatedMeta });
+        await this.store.bulkPatchMetadata(patches);
       } catch {
         // Best-effort during shutdown — suppress errors.
       }

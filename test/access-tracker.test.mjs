@@ -21,6 +21,10 @@ function createMockStore(entries = new Map()) {
     getByIdCalls: [],
     /** @type {Array<{id: string, updates: object}>} */
     updateCalls: [],
+    /** @type {Array<{ids: string[]}>} */
+    batchGetByIdCalls: [],
+    /** @type {Array<{patches: object[]}>} */
+    bulkPatchMetadataCalls: [],
     async getById(id) {
       this.getByIdCalls.push({ id });
       const entry = entries.get(id);
@@ -36,6 +40,30 @@ function createMockStore(entries = new Map()) {
         entry.metadata = updates.metadata;
       }
       return { ...entry };
+    },
+    async batchGetById(ids) {
+      this.batchGetByIdCalls.push({ ids: [...ids] });
+      return ids.map(id => {
+        const entry = entries.get(id);
+        return entry ? { ...entry } : null;
+      }).filter(Boolean);
+    },
+    async bulkPatchMetadata(patches) {
+      this.bulkPatchMetadataCalls.push({ patches: JSON.parse(JSON.stringify(patches)) });
+      const success = [];
+      const failed = [];
+      for (const { id, patch } of patches) {
+        const entry = entries.get(id);
+        if (!entry) {
+          failed.push({ id, error: "not found" });
+        } else {
+          if (patch.metadata) {
+            entry.metadata = patch.metadata;
+          }
+          success.push(id);
+        }
+      }
+      return { success, failed };
     },
   };
 }
@@ -530,7 +558,7 @@ describe("AccessTracker", () => {
 // ============================================================================
 
 describe("AccessTracker flush integration", () => {
-  it("flush calls store.update with merged metadata for each pending ID", async () => {
+  it("flush calls store.batchGetById and bulkPatchMetadata with merged metadata", async () => {
     const id1 = "aaaaaaaa-1111-2222-3333-444444444444";
     const id2 = "bbbbbbbb-1111-2222-3333-444444444444";
 
@@ -552,28 +580,26 @@ describe("AccessTracker flush integration", () => {
       // Pending should be empty after flush
       assert.equal(tracker.getPendingUpdates().size, 0);
 
-      // getById should be called once per entry (pure read, no delete+add)
-      assert.equal(store.getByIdCalls.length, 2);
+      // batchGetById should be called once with both IDs
+      assert.equal(store.batchGetByIdCalls.length, 1);
+      assert.deepEqual(store.batchGetByIdCalls[0].ids.sort(), [id1, id2].sort());
 
-      // store.update should only have write calls (with metadata), no empty reads
-      assert.equal(store.updateCalls.length, 2);
-
-      // All update calls should have metadata (no empty {} reads)
-      const writeCalls = store.updateCalls.filter((c) => c.updates.metadata);
-      assert.equal(writeCalls.length, 2);
+      // bulkPatchMetadata should be called once
+      assert.equal(store.bulkPatchMetadataCalls.length, 1);
 
       // Verify id1 metadata merge: accessCount 2 + 3 = 5, customTag preserved
-      const id1Write = writeCalls.find((c) => c.id === id1);
-      assert.ok(id1Write, "Should have a write call for id1");
-      const id1Meta = JSON.parse(id1Write.updates.metadata);
+      const patchCall = store.bulkPatchMetadataCalls[0];
+      const id1Patch = patchCall.patches.find(p => p.id === id1);
+      assert.ok(id1Patch, "Should have a patch for id1");
+      const id1Meta = JSON.parse(id1Patch.patch.metadata);
       assert.equal(id1Meta.accessCount, 5);
       assert.equal(id1Meta.customTag, "keep");
       assert.equal(typeof id1Meta.lastAccessedAt, "number");
 
       // Verify id2 metadata merge: accessCount 0 + 1 = 1
-      const id2Write = writeCalls.find((c) => c.id === id2);
-      assert.ok(id2Write, "Should have a write call for id2");
-      const id2Meta = JSON.parse(id2Write.updates.metadata);
+      const id2Patch = patchCall.patches.find(p => p.id === id2);
+      assert.ok(id2Patch, "Should have a patch for id2");
+      const id2Meta = JSON.parse(id2Patch.patch.metadata);
       assert.equal(id2Meta.accessCount, 1);
     } finally {
       tracker.destroy();
@@ -592,9 +618,10 @@ describe("AccessTracker flush integration", () => {
       tracker.recordAccess([missingId]);
       await tracker.flush();
 
-      // Should have tried getById, but no write-back via update
-      assert.equal(store.getByIdCalls.length, 1);
-      assert.equal(store.updateCalls.length, 0);
+      // Should have tried batchGetById, but no write-back via bulkPatchMetadata
+      assert.equal(store.batchGetByIdCalls.length, 1);
+      assert.deepEqual(store.batchGetByIdCalls[0].ids, [missingId]);
+      assert.equal(store.bulkPatchMetadataCalls.length, 0);
 
       // No warnings (null return is expected, not an error)
       assert.equal(logger.warnings.length, 0);
@@ -607,19 +634,31 @@ describe("AccessTracker flush integration", () => {
     const id1 = "dddddddd-1111-2222-3333-444444444444";
     const id2 = "eeeeeeee-1111-2222-3333-444444444444";
 
-    let getByIdCallCount = 0;
     const failingStore = {
-      async getById(id) {
-        getByIdCallCount++;
-        if (id === id1) {
-          throw new Error("simulated store failure");
+      async batchGetById(ids) {
+        return ids.map(id => {
+          if (id === id1) return null; // simulate not found
+          return { id, metadata: JSON.stringify({ accessCount: 0 }) };
+        }).filter(Boolean);
+      },
+      bulkPatchMetadataCalls: [],
+      async bulkPatchMetadata(patches) {
+        this.bulkPatchMetadataCalls.push({ patches });
+        const success = [];
+        const failed = [];
+        for (const { id } of patches) {
+          // id1 already filtered out in batchGetById
+          // id2 fails the patch (simulate transient failure)
+          if (id === id2) {
+            failed.push({ id, error: "simulated transient failure" });
+          } else {
+            success.push(id);
+          }
         }
-        // id2 succeeds
-        return { id, metadata: JSON.stringify({ accessCount: 0 }) };
+        return { success, failed };
       },
-      async update(id, updates) {
-        return { id, metadata: updates.metadata || "{}" };
-      },
+      getByIdCalls: [],
+      updateCalls: [],
     };
 
     const logger = createMockLogger();
@@ -628,7 +667,8 @@ describe("AccessTracker flush integration", () => {
       tracker.recordAccess([id1, id2]);
       await tracker.flush();
 
-      // Should have warned about id1 failure
+      // id1 should have been silently skipped (not found)
+      // id2 should have failed and been requeued
       assert.ok(logger.warnings.length >= 1, "Should log at least one warning");
       const warningMsg = String(logger.warnings[0][0]);
       assert.ok(
@@ -636,8 +676,8 @@ describe("AccessTracker flush integration", () => {
         `Warning should mention access-tracker, got: ${warningMsg}`,
       );
 
-      // id2 should have been processed (getById was called for it)
-      assert.equal(getByIdCallCount, 2, "getById should have been called for both IDs");
+      // id2 should be requeued for retry
+      assert.equal(tracker.getPendingUpdates().has(id2), true, "Failed id2 should be requeued");
     } finally {
       tracker.destroy();
     }
@@ -647,20 +687,20 @@ describe("AccessTracker flush integration", () => {
     const id1 = "ffffffff-1111-2222-3333-444444444444";
 
     let resolveFirst;
-    let getByIdCallCount = 0;
+    let batchGetByIdCallCount = 0;
     const slowStore = {
-      async getById(id) {
-        getByIdCallCount++;
-        if (getByIdCallCount === 1) {
-          // First getById blocks until we resolve
+      async batchGetById(ids) {
+        batchGetByIdCallCount++;
+        if (batchGetByIdCallCount === 1) {
+          // First batchGetById blocks until we resolve
           await new Promise((resolve) => { resolveFirst = resolve; });
         }
-        return { id, metadata: JSON.stringify({ accessCount: 0 }) };
+        return ids.map(id => ({ id, metadata: JSON.stringify({ accessCount: 0 }) }));
       },
-      updateCalls: [],
-      async update(id, updates) {
-        this.updateCalls.push({ id, updates });
-        return { id, metadata: updates.metadata || "{}" };
+      bulkPatchMetadataCalls: [],
+      async bulkPatchMetadata(patches) {
+        this.bulkPatchMetadataCalls.push({ patches });
+        return { success: patches.map(p => p.id), failed: [] };
       },
     };
 
@@ -669,7 +709,7 @@ describe("AccessTracker flush integration", () => {
     try {
       tracker.recordAccess([id1]);
 
-      // Start first flush (will block on first store.getById)
+      // Start first flush (will block on first batchGetById)
       const flush1 = tracker.flush();
 
       // Record more while flush is in progress
@@ -686,8 +726,8 @@ describe("AccessTracker flush integration", () => {
       // Both flushes should have completed — no pending data left
       assert.equal(tracker.getPendingUpdates().size, 0, "All data should be flushed");
 
-      // store.update should have been called twice (once per flush cycle)
-      assert.equal(slowStore.updateCalls.length, 2, "Two write-back cycles should have occurred");
+      // bulkPatchMetadata should have been called twice (once per flush cycle)
+      assert.equal(slowStore.bulkPatchMetadataCalls.length, 2, "Two write-back cycles should have occurred");
     } finally {
       tracker.destroy();
     }
@@ -699,18 +739,22 @@ describe("AccessTracker flush integration", () => {
     let failCount = 0;
     const flakeyStore = {
       getByIdCalls: [],
-      updateCalls: [],
-      async getById(id) {
-        this.getByIdCalls.push({ id });
+      async batchGetById(ids) {
+        return ids.map(id => ({
+          id,
+          metadata: JSON.stringify({ accessCount: 0 }),
+        }));
+      },
+      bulkPatchMetadataCalls: [],
+      async bulkPatchMetadata(patches) {
+        this.bulkPatchMetadataCalls.push({ patches });
         failCount++;
         if (failCount === 1) {
-          throw new Error("simulated transient failure");
+          // First call: all patches fail
+          return { success: [], failed: patches.map(p => ({ id: p.id, error: "simulated transient failure" })) };
         }
-        return { id, metadata: JSON.stringify({ accessCount: 0 }) };
-      },
-      async update(id, updates) {
-        this.updateCalls.push({ id, updates });
-        return { id, metadata: updates.metadata || "{}" };
+        // Second call: all succeed
+        return { success: patches.map(p => p.id), failed: [] };
       },
     };
 
@@ -719,16 +763,16 @@ describe("AccessTracker flush integration", () => {
     try {
       tracker.recordAccess([id1]); // delta=1
 
-      // First flush — getById fails, delta should be requeued
+      // First flush — bulkPatchMetadata fails, delta should be requeued
       await tracker.flush();
       assert.equal(tracker.getPendingUpdates().size, 1, "Failed delta should be requeued");
       assert.equal(tracker.getPendingUpdates().get(id1), 1, "Requeued delta should be 1");
       assert.ok(logger.warnings.length >= 1, "Should log a warning on failure");
 
-      // Second flush — getById succeeds this time
+      // Second flush — bulkPatchMetadata succeeds this time
       await tracker.flush();
       assert.equal(tracker.getPendingUpdates().size, 0, "Requeued data should be flushed");
-      assert.equal(flakeyStore.updateCalls.length, 1, "Should have one successful write-back");
+      assert.equal(flakeyStore.bulkPatchMetadataCalls.length, 2, "Should have two bulkPatchMetadata calls");
     } finally {
       tracker.destroy();
     }

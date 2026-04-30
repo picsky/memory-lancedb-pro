@@ -23,21 +23,44 @@ class MockStore {
     this.data = new Map();
     this.failCount = new Map();
   }
-  
+
   async getById(id) {
     return this.data.get(id) ?? null;
   }
-  
+
+  async batchGetById(ids) {
+    return ids.map(id => {
+      const entry = this.data.get(id);
+      return entry ? { ...entry, id } : null;
+    }).filter(Boolean);
+  }
+
   async update(id, updates) {
     const fails = this.failCount.get(id) ?? 0;
     if (fails < this.failUntil) {
       this.failCount.set(id, fails + 1);
       throw new Error("Simulated failure " + (fails + 1));
     }
-    this.data.set(id, updates);
+    this.data.set(id, { ...(this.data.get(id) || {}), ...updates });
     return updates;
   }
-  
+
+  async bulkPatchMetadata(patches) {
+    const success = [];
+    const failed = [];
+    for (const { id, patch } of patches) {
+      const fails = this.failCount.get(id) ?? 0;
+      if (fails < this.failUntil) {
+        this.failCount.set(id, fails + 1);
+        failed.push({ id, error: "Simulated failure " + (fails + 1) });
+      } else {
+        this.data.set(id, { ...(this.data.get(id) || {}), ...patch });
+        success.push(id);
+      }
+    }
+    return { success, failed };
+  }
+
   reset() {
     this.data.clear();
     this.failCount.clear();

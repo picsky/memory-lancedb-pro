@@ -622,6 +622,49 @@ export class MemoryStore {
     };
   }
 
+  /**
+   * Batch-read multiple memory entries in a single query using WHERE id IN (...).
+   * Much more efficient than N individual getById() calls for bulk metadata updates.
+   */
+  async batchGetById(ids: string[], scopeFilter?: string[]): Promise<MemoryEntry[]> {
+    await this.ensureInitialized();
+
+    if (ids.length === 0) return [];
+    if (isExplicitDenyAllScopeFilter(scopeFilter)) return [];
+
+    const idList = ids.map(id => `'${escapeSqlLiteral(id)}'`).join(", ");
+    let query = this.table!
+      .query()
+      .where(`id IN (${idList})`)
+      .select([
+        "id", "text", "vector", "category", "scope",
+        "importance", "timestamp", "metadata",
+      ]);
+
+    const rows = await query.toArray();
+    const results: MemoryEntry[] = [];
+
+    for (const row of rows) {
+      const rowScope = (row.scope as string | undefined) ?? "global";
+      if (scopeFilter && scopeFilter.length > 0 && !scopeFilter.includes(rowScope)) {
+        continue;
+      }
+
+      results.push({
+        id: row.id as string,
+        text: row.text as string,
+        vector: Array.from(row.vector as Iterable<number>),
+        category: row.category as MemoryEntry["category"],
+        scope: rowScope,
+        importance: Number(row.importance),
+        timestamp: Number(row.timestamp),
+        metadata: (row.metadata as string) || "{}",
+      });
+    }
+
+    return results;
+  }
+
   async vectorSearch(vector: number[], limit = 5, minScore = 0.3, scopeFilter?: string[], options?: { excludeInactive?: boolean }): Promise<MemorySearchResult[]> {
     await this.ensureInitialized();
 
@@ -929,9 +972,14 @@ export class MemoryStore {
       query = query.where(conditions.join(" AND "));
     }
 
-    // Fetch all matching rows (no pre-limit) so app-layer sort is correct across full dataset.
-    // Hard cap to prevent OOM on very large datasets; use a narrower filter if more rows are needed.
+    // LanceDB 0.26 lacks ORDER BY on .query(), so we can't fully push down
+    // the limit. Instead, use a generous overfetch: fetch at most
+    // (offset + limit) * 3 rows (capped at LIST_HARD_MAX). This avoids
+    // pulling the entire table when only a few rows are needed, while still
+    // giving the JS sort enough data to find the correct top-N by timestamp.
     const LIST_HARD_MAX = 10_000;
+    const overFetchFactor = 3;
+    const fetchLimit = Math.min((offset + limit) * overFetchFactor, LIST_HARD_MAX);
     const results = await query
       .select([
         "id",
@@ -942,6 +990,7 @@ export class MemoryStore {
         "timestamp",
         "metadata",
       ])
+      .limit(fetchLimit)
       .toArray();
 
     if (results.length > LIST_HARD_MAX) {
@@ -952,6 +1001,7 @@ export class MemoryStore {
       results.length = LIST_HARD_MAX;
     }
 
+    // Sort in JS (LanceDB has no ORDER BY) and apply offset + limit.
     return results
       .map(
         (row): MemoryEntry => ({
@@ -1180,6 +1230,76 @@ export class MemoryStore {
     );
   }
 
+  /**
+   * Bulk-patch metadata for multiple memory entries in a single lock acquisition.
+   *
+   * Each patch is merged into the existing metadata of the corresponding entry.
+   * All reads happen before the lock, and all writes happen inside a single lock
+   * acquisition (batch delete + batch add). This avoids N separate lock
+   * acquisitions when updating access metadata for multiple entries.
+   *
+   * Returns `{ success: string[], failed: { id, error }[] }`.
+   */
+  async bulkPatchMetadata(
+    patches: Array<{ id: string; patch: MetadataPatch }>,
+    scopeFilter?: string[],
+  ): Promise<{ success: string[]; failed: Array<{ id: string; error: string }> }> {
+    if (patches.length === 0) return { success: [], failed: [] };
+
+    await this.ensureInitialized();
+    if (isExplicitDenyAllScopeFilter(scopeFilter)) {
+      return { success: [], failed: patches.map(p => ({ id: p.id, error: "scope denied" })) };
+    }
+
+    // Step 1: Batch-read all entries (before lock)
+    const ids = patches.map(p => p.id);
+    const existingEntries = await this.batchGetById(ids, scopeFilter);
+    const entryMap = new Map(existingEntries.map(e => [e.id, e]));
+
+    // Step 2: Build updated entries and track results
+    const updatedEntries: MemoryEntry[] = [];
+    const originals: MemoryEntry[] = [];
+    const result = { success: [] as string[], failed: [] as Array<{ id: string; error: string }> };
+
+    for (const { id, patch } of patches) {
+      const existing = entryMap.get(id);
+      if (!existing) {
+        result.failed.push({ id, error: "not found" });
+        continue;
+      }
+
+      const metadata = buildSmartMetadata(existing, patch);
+      updatedEntries.push({
+        ...existing,
+        metadata: stringifySmartMetadata(metadata),
+      });
+      originals.push(existing);
+      result.success.push(id);
+    }
+
+    // Step 3: Single lock acquisition — batch delete + batch add
+    if (result.success.length > 0) {
+      await this.runWithFileLock(async () => {
+        const delIds = result.success.map(id => `'${escapeSqlLiteral(id)}'`).join(", ");
+        await this.table!.delete(`id IN (${delIds})`);
+        try {
+          await this.table!.add(updatedEntries);
+        } catch (addError) {
+          // Rollback: try to restore originals to avoid data loss
+          try {
+            await this.table!.add(originals);
+          } catch {
+            // Double failure — originals couldn't be restored either.
+            // This is extremely rare; log and continue.
+          }
+          throw addError;
+        }
+      });
+    }
+
+    return result;
+  }
+
   async bulkDelete(scopeFilter: string[], beforeTimestamp?: number): Promise<number> {
     await this.ensureInitialized();
 
@@ -1292,15 +1412,19 @@ export class MemoryStore {
     const results = await this.table!
       .query()
       .where(whereClause)
+      .limit(limit)
       .toArray();
 
     return results
-      .slice(0, limit)
       .map(
         (row): MemoryEntry => ({
           id: row.id as string,
           text: row.text as string,
-          vector: Array.isArray(row.vector) ? (row.vector as number[]) : [],
+          vector: row.vector
+            ? Array.isArray(row.vector)
+              ? (row.vector as number[])
+              : Array.from(row.vector as Iterable<number>)
+            : [],
           category: row.category as MemoryEntry["category"],
           scope: (row.scope as string | undefined) ?? "global",
           importance: Number(row.importance),

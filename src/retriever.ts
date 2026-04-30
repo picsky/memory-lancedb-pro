@@ -1504,13 +1504,15 @@ export class MemoryRetriever {
    * Record access stats (access_count, last_accessed_at) and apply tier
    * promotion/demotion for a small number of top results.
    *
-   * Note: this writes back to LanceDB via delete+readd; keep it bounded.
+   * Writes back to LanceDB in a single batch operation (one lock acquisition)
+   * instead of N separate update() calls.
    */
   private async recordAccessAndMaybeTransition(results: RetrievalResult[]): Promise<void> {
     if (!this.decayEngine && !this.tierManager) return;
 
     const now = Date.now();
     const toUpdate = results.slice(0, 3);
+    const patches: Array<{ id: string; patch: { metadata: string } }> = [];
 
     for (const r of toUpdate) {
       const { memory, meta } = getDecayableFromEntry(r.entry);
@@ -1544,10 +1546,12 @@ export class MemoryRetriever {
         }
       }
 
+      patches.push({ id: r.entry.id, patch: { metadata: JSON.stringify(meta) } });
+    }
+
+    if (patches.length > 0) {
       try {
-        await this.store.update(r.entry.id, {
-          metadata: JSON.stringify(meta),
-        });
+        await this.store.bulkPatchMetadata(patches);
       } catch {
         // best-effort: ignore
       }
