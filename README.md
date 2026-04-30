@@ -13,7 +13,7 @@ A LanceDB-backed OpenClaw memory plugin that stores preferences, decisions, and 
 [![npm version](https://img.shields.io/npm/v/memory-lancedb-pro)](https://www.npmjs.com/package/memory-lancedb-pro)
 [![LanceDB](https://img.shields.io/badge/LanceDB-Vectorstore-orange)](https://lancedb.com)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-<h2>⚡ <a href="https://github.com/CortexReach/memory-lancedb-pro/releases/tag/v1.1.0-beta.10">v1.1.0-beta.10 — OpenClaw 2026.3+ Hook Adaptation</a></h2>
+<h2>⚡ <a href="https://github.com/CortexReach/memory-lancedb-pro/releases/tag/v1.1.1">v1.1.1 — Enhanced Memory with Consolidation Scoring & Background Pipeline</a></h2>
 
 <p>
  ✅ Fully adapted for OpenClaw 2026.3+ new plugin architecture<br>
