@@ -735,7 +735,11 @@ export class MemoryStore {
     query: string,
     limit = 5,
     scopeFilter?: string[],
-    options?: { excludeInactive?: boolean },
+    options?: {
+      excludeInactive?: boolean;
+      /** BM25 score normalization: "minmax" (default) or "sigmoid". */
+      bm25Normalization?: "minmax" | { type: "sigmoid"; midpoint?: number };
+    },
   ): Promise<MemorySearchResult[]> {
     await this.ensureInitialized();
 
@@ -765,43 +769,62 @@ export class MemoryStore {
       }
 
       const results = await searchQuery.toArray();
-      const mapped: MemorySearchResult[] = [];
 
+      // Collect raw scores for normalization
+      const rawScores: { row: typeof results[0]; score: number }[] = [];
       for (const row of results) {
         const rowScope = (row.scope as string | undefined) ?? "global";
-
-        // Double-check scope filter in application layer
-        if (
-          scopeFilter &&
-          scopeFilter.length > 0 &&
-          !scopeFilter.includes(rowScope)
-        ) {
+        if (scopeFilter && scopeFilter.length > 0 && !scopeFilter.includes(rowScope)) {
           continue;
         }
-
-        // LanceDB FTS _score is raw BM25 (unbounded). Normalize with sigmoid.
-        // LanceDB may return BigInt for numeric columns; coerce safely.
         const rawScore = row._score != null ? Number(row._score) : 0;
-        const normalizedScore =
-          rawScore > 0 ? 1 / (1 + Math.exp(-rawScore / 5)) : 0.5;
+        rawScores.push({ row, score: rawScore > 0 ? rawScore : 0 });
+      }
 
+      // Normalize scores based on the configured strategy
+      const normalization = options?.bm25Normalization ?? "minmax";
+      if (normalization === "minmax") {
+        // Rank-based min-max normalization: best result = 1.0, worst = ~0.0
+        // This adapts to any corpus size and provides consistent [0, 1] scores.
+        if (rawScores.length > 0) {
+          rawScores.sort((a, b) => b.score - a.score);
+          const maxRaw = rawScores[0].score;
+          const minRaw = rawScores[rawScores.length - 1].score;
+          const range = maxRaw - minRaw || 1; // avoid division by zero
+          for (let i = 0; i < rawScores.length; i++) {
+            const normalizedScore = (rawScores[i].score - minRaw) / range;
+            rawScores[i].score = normalizedScore;
+          }
+        }
+      } else if (normalization === "sigmoid" || typeof normalization === "object") {
+        // Legacy sigmoid normalization with configurable midpoint.
+        // sigmoid(x/midpoint): at midpoint → ~0.73, at 0 → 0.5 floor.
+        const midpoint = (typeof normalization === "object" ? normalization.midpoint : 5) ?? 5;
+        for (const rs of rawScores) {
+          rs.score = rs.score > 0 ? 1 / (1 + Math.exp(-rs.score / midpoint)) : 0.5;
+        }
+      }
+
+      // Map results and apply inactive filter
+      const mapped: MemorySearchResult[] = [];
+      for (const rs of rawScores) {
+        const row = rs.row;
         const entry: MemoryEntry = {
             id: row.id as string,
             text: row.text as string,
             vector: row.vector as number[],
             category: row.category as MemoryEntry["category"],
-            scope: rowScope,
+            scope: (row.scope as string | undefined) ?? "global",
             importance: Number(row.importance),
             timestamp: Number(row.timestamp),
             metadata: (row.metadata as string) || "{}",
         };
 
-        // Skip inactive (superseded) records when requested
         if (inactiveFilter && !isMemoryActiveAt(parseSmartMetadata(entry.metadata, entry))) {
           continue;
         }
 
-        mapped.push({ entry, score: normalizedScore });
+        mapped.push({ entry, score: rs.score });
 
         if (mapped.length >= safeLimit) break;
       }

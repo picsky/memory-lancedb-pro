@@ -102,6 +102,13 @@ export interface RetrievalConfig {
    *  Applied on top of temporal type modifier (dynamic 3× faster).
    *  Defaults to DEFAULT_CATEGORY_DECAY_MULTIPLIERS. */
   categoryDecayMultipliers?: Record<MemoryCategory, number>;
+  /** BM25 score normalization strategy.
+   *  "minmax" (default): ranks results relative to each other within a result set,
+   *    providing consistent [0, 1] scores regardless of corpus size.
+   *  "sigmoid": legacy sigmoid(x/midpoint). Midpoint defaults to 5.0. */
+  bm25Normalization:
+    | "minmax"
+    | { type: "sigmoid"; midpoint?: number };
 }
 
 export interface RetrievalContext {
@@ -212,6 +219,7 @@ export const DEFAULT_RETRIEVAL_CONFIG: RetrievalConfig = {
   maxHalfLifeMultiplier: 3,
   tagPrefixes: ["proj", "env", "team", "scope"],
   categoryDecayMultipliers: DEFAULT_CATEGORY_DECAY_MULTIPLIERS,
+  bm25Normalization: "minmax",
 };
 
 // ============================================================================
@@ -793,7 +801,7 @@ export class MemoryRetriever {
       query,
       candidatePoolSize,
       scopeFilter,
-      { excludeInactive: true },
+      { excludeInactive: true, bm25Normalization: this.config.bm25Normalization },
     );
     const categoryFiltered = category
       ? bm25Results.filter((r) => r.entry.category === category)
@@ -1101,7 +1109,10 @@ export class MemoryRetriever {
     scopeFilter?: string[],
     category?: string,
   ): Promise<Array<MemorySearchResult & { rank: number }>> {
-    const results = await this.store.bm25Search(query, limit, scopeFilter, { excludeInactive: true });
+    const results = await this.store.bm25Search(query, limit, scopeFilter, {
+      excludeInactive: true,
+      bm25Normalization: this.config.bm25Normalization,
+    });
 
     // Filter by category if specified
     const filtered = category
