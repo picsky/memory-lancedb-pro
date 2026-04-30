@@ -9,6 +9,7 @@ const {
   buildClusters,
   buildMergedEntry,
   runCompaction,
+  generateLSHHyperplanes,
 } = jiti("../src/memory-compactor.ts");
 
 // ============================================================================
@@ -288,5 +289,95 @@ describe("runCompaction", () => {
     });
 
     assert.ok(result.scanned <= 3);
+  });
+});
+
+// ============================================================================
+// LSH (Locality-Sensitive Hashing)
+// ============================================================================
+
+describe("generateLSHHyperplanes", () => {
+  it("produces K hyperplanes of correct dimension", () => {
+    const hps = generateLSHHyperplanes(16, 128);
+    assert.equal(hps.length, 16);
+    assert.equal(hps[0].length, 128);
+  });
+
+  it("is deterministic with same seed", () => {
+    const a = generateLSHHyperplanes(8, 64, 42);
+    const b = generateLSHHyperplanes(8, 64, 42);
+    for (let h = 0; h < a.length; h++) {
+      for (let d = 0; d < a[h].length; d++) {
+        assert.equal(a[h][d], b[h][d]);
+      }
+    }
+  });
+
+  it("produces different hyperplanes with different seeds", () => {
+    const a = generateLSHHyperplanes(8, 64, 1);
+    const b = generateLSHHyperplanes(8, 64, 99);
+    let anyDiff = false;
+    for (let h = 0; h < a.length && !anyDiff; h++) {
+      for (let d = 0; d < a[h].length && !anyDiff; d++) {
+        if (a[h][d] !== b[h][d]) anyDiff = true;
+      }
+    }
+    assert.ok(anyDiff);
+  });
+
+  it("hyperplanes are unit vectors", () => {
+    const hps = generateLSHHyperplanes(16, 256);
+    for (const hp of hps) {
+      let norm = 0;
+      for (let d = 0; d < hp.length; d++) norm += hp[d] * hp[d];
+      assert.ok(Math.abs(norm - 1.0) < 1e-10, `hyperplane norm = ${norm}`);
+    }
+  });
+});
+
+describe("buildClusters with LSH (high-dimensional vectors)", () => {
+  function randomUnitVec(dim) {
+    const v = new Array(dim);
+    for (let i = 0; i < dim; i++) v[i] = Math.random() * 2 - 1;
+    let norm = 0;
+    for (let i = 0; i < dim; i++) norm += v[i] * v[i];
+    norm = Math.sqrt(norm);
+    for (let i = 0; i < dim; i++) v[i] /= norm;
+    return v;
+  }
+
+  function perturb(vec, noise = 0.05) {
+    const dim = vec.length;
+    const v = vec.slice();
+    for (let i = 0; i < dim; i++) v[i] += (Math.random() * 2 - 1) * noise;
+    let norm = 0;
+    for (let i = 0; i < dim; i++) norm += v[i] * v[i];
+    norm = Math.sqrt(norm);
+    for (let i = 0; i < dim; i++) v[i] /= norm;
+    return v;
+  }
+
+  it("finds clusters with 1024-dim vectors (realistic embedding size)", () => {
+    // Create tight cluster: pick a center, perturb slightly
+    const center = randomUnitVec(1024);
+    const entries = Array.from({ length: 10 }, () =>
+      entry({ vector: perturb(center, 0.02), importance: 0.3 + Math.random() * 0.7 })
+    );
+    const plans = buildClusters(entries, 0.88, 2);
+    // LSH is probabilistic — at minimum it should find 1 cluster with 2 members
+    // (all 10 entries have sim >> 0.88, but some may land in different buckets)
+    assert.ok(plans.length >= 1, `expected >= 1 cluster, got ${plans.length}`);
+    const totalMembers = plans.reduce((sum, p) => sum + p.memberIndices.length, 0);
+    assert.ok(totalMembers >= 2, `expected >= 2 members in clusters, got ${totalMembers}`);
+  });
+
+  it("returns empty when all vectors are orthogonal (LSH correctly separates)", () => {
+    const entries = Array.from({ length: 10 }, (_, i) => {
+      const v = new Array(64).fill(0);
+      v[i % 64] = 1;
+      return entry({ vector: v });
+    });
+    const plans = buildClusters(entries, 0.88, 2);
+    assert.equal(plans.length, 0);
   });
 });
