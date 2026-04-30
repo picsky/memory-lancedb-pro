@@ -42,6 +42,15 @@ const MAX_ACCESS_COUNT = 10_000;
 /** Access count itself decays with a 30-day half-life */
 const ACCESS_DECAY_HALF_LIFE_DAYS = 30;
 
+/** Confidence update delta per confirmed/bad event. */
+const CONFIDENCE_DELTA = 0.05;
+
+/** Confidence decay rate per day of non-use (slow leak). */
+const CONFIDENCE_DECAY_RATE_PER_DAY = 0.001; // ~36% loss over 1 year if never used
+
+/** Minimum confidence floor. */
+const MIN_CONFIDENCE = 0.1;
+
 // ============================================================================
 // Utility
 // ============================================================================
@@ -197,6 +206,132 @@ export function computeEffectiveHalfLife(
   // Hard cap
   const cap = baseHalfLife * maxMultiplier;
   return Math.min(result, cap);
+}
+
+// ============================================================================
+// Confidence Update Computation
+// ============================================================================
+
+/**
+ * Compute how confidence should change based on recall outcomes.
+ *
+ * Rules:
+ * - Confirmed useful (support / confirmed_use): confidence += delta
+ * - Bad recall (contradicted / useless): confidence -= delta
+ * - Long-term non-use: slow decay (1 per day of CONFIDENCE_DECAY_RATE)
+ *
+ * @param currentConfidence  Current confidence [0, 1]
+ * @param badRecallCount     Number of bad recall events
+ * @param lastConfirmedUseAt Timestamp of last confirmed use (0 if never)
+ * @param lastAccessedAt     Timestamp of last access (0 if never)
+ * @param createdAt          Memory creation timestamp
+ * @param now                Current timestamp
+ * @returns New confidence value [0, 1]
+ */
+export function computeConfidenceUpdate(
+  currentConfidence: number,
+  badRecallCount: number,
+  lastConfirmedUseAt: number,
+  lastAccessedAt: number,
+  createdAt: number,
+  now: number = Date.now(),
+): number {
+  if (!Number.isFinite(currentConfidence)) currentConfidence = 0.7;
+
+  let confidence = currentConfidence;
+
+  // Bad recall penalty (cumulative, capped at max 0.5 total loss)
+  const badRecallPenalty = Math.min(0.5, badRecallCount * CONFIDENCE_DELTA);
+  confidence -= badRecallPenalty;
+
+  // Confirmed use bonus (only if there was at least one confirmed use)
+  if (lastConfirmedUseAt > 0) {
+    confidence += CONFIDENCE_DELTA * 0.5; // smaller bonus, cumulative effect is limited
+  }
+
+  // Long-term non-use decay: slow leak
+  const lastActivity = Math.max(lastAccessedAt, lastConfirmedUseAt, createdAt);
+  const daysSinceActivity = Math.max(0, (now - lastActivity) / (1000 * 60 * 60 * 24));
+  if (daysSinceActivity > 30) {
+    // Only start decaying after 30 days of inactivity
+    const decay = Math.min(0.3, (daysSinceActivity - 30) * CONFIDENCE_DECAY_RATE_PER_DAY);
+    confidence -= decay;
+  }
+
+  return Math.max(MIN_CONFIDENCE, Math.min(1, confidence));
+}
+
+/**
+ * Build updated metadata including confidence recalculation.
+ *
+ * Extends `buildUpdatedMetadata` to also update confidence based on
+ * recall outcomes. Use this when the access event also carries outcome
+ * information (e.g., the memory was contradicted or confirmed useful).
+ */
+export function buildUpdatedMetadataWithConfidence(
+  existingMetadata: string | undefined,
+  accessDelta: number,
+  outcome?: { confirmed?: boolean; contradicted?: boolean },
+  now: number = Date.now(),
+): string {
+  const base = buildUpdatedMetadata(existingMetadata, accessDelta);
+  const parsed = parseSmartMetadataForConfidence(base);
+
+  const newConfidence = computeConfidenceUpdate(
+    parsed.confidence,
+    parsed.bad_recall_count + (outcome?.contradicted ? 1 : 0),
+    parsed.last_confirmed_use_at ?? 0,
+    parsed.last_accessed_at || now,
+    parsed.valid_from || now,
+    now,
+  );
+
+  // Merge confidence back into metadata
+  try {
+    const obj = JSON.parse(base);
+    obj.confidence = newConfidence;
+    if (outcome?.confirmed) {
+      obj.last_confirmed_use_at = now;
+    }
+    if (outcome?.contradicted) {
+      obj.bad_recall_count = (obj.bad_recall_count ?? 0) + 1;
+    }
+    return JSON.stringify(obj);
+  } catch {
+    return base;
+  }
+}
+
+/**
+ * Minimal parse for confidence fields (avoid circular import with smart-metadata).
+ */
+function parseSmartMetadataForConfidence(
+  metadata: string,
+): {
+  confidence: number;
+  bad_recall_count: number;
+  last_confirmed_use_at: number | undefined;
+  last_accessed_at: number;
+  valid_from: number;
+} {
+  try {
+    const obj = JSON.parse(metadata);
+    return {
+      confidence: typeof obj.confidence === "number" ? obj.confidence : 0.7,
+      bad_recall_count: typeof obj.bad_recall_count === "number" ? obj.bad_recall_count : 0,
+      last_confirmed_use_at: typeof obj.last_confirmed_use_at === "number" ? obj.last_confirmed_use_at : undefined,
+      last_accessed_at: typeof obj.last_accessed_at === "number" ? obj.last_accessed_at : 0,
+      valid_from: typeof obj.valid_from === "number" ? obj.valid_from : 0,
+    };
+  } catch {
+    return {
+      confidence: 0.7,
+      bad_recall_count: 0,
+      last_confirmed_use_at: undefined,
+      last_accessed_at: 0,
+      valid_from: 0,
+    };
+  }
 }
 
 // ============================================================================

@@ -39,6 +39,16 @@ import {
   recordCompactionRun,
   type CompactionConfig,
 } from "./src/memory-compactor.js";
+import {
+  DEFAULT_CONSOLIDATION_CONFIG,
+  type ConsolidationConfig,
+} from "./src/memory-consolidation.js";
+import {
+  runBackgroundPipeline,
+  DEFAULT_SWEEP_CONFIG,
+  type PipelineConfig,
+  type SweepConfig,
+} from "./src/background-scheduler.js";
 import { runWithReflectionTransientRetryOnce } from "./src/reflection-retry.js";
 import { resolveReflectionSessionSearchDirs, stripResetSuffix } from "./src/session-recovery.js";
 import {
@@ -223,6 +233,26 @@ interface PluginConfig {
     minClusterSize?: number;
     maxMemoriesToScan?: number;
     cooldownHours?: number;
+  };
+  memoryConsolidation?: {
+    enabled?: boolean;
+    cooldownHours?: number;
+    weightAccessRecency?: number;
+    weightAccessFrequency?: number;
+    weightInjectionUse?: number;
+    weightConfirmation?: number;
+    weightBadRecall?: number;
+    weightTierStability?: number;
+    promoteThreshold?: number;
+    archiveThreshold?: number;
+    suppressThreshold?: number;
+    minArchiveAgeDays?: number;
+    maxMemoriesPerSweep?: number;
+  };
+  memorySweep?: {
+    maxMemoriesPerSweep?: number;
+    staleThreshold?: number;
+    healthThreshold?: number;
   };
   sessionCompression?: {
     enabled?: boolean;
@@ -2326,6 +2356,50 @@ const memoryLanceDBProPlugin = {
       });
     }
 
+    // Background pipeline: sweep + consolidation + compaction (fire-and-forget)
+    if (config.memoryConsolidation?.enabled || config.memorySweep) {
+      api.on("gateway_start", () => {
+        const stateDir = dirname(resolvedDbPath);
+        const consolidationCfg: ConsolidationConfig = {
+          ...DEFAULT_CONSOLIDATION_CONFIG,
+          enabled: config.memoryConsolidation?.enabled ?? false,
+          cooldownHours: config.memoryConsolidation?.cooldownHours ?? 24,
+          weightAccessRecency: config.memoryConsolidation?.weightAccessRecency ?? DEFAULT_CONSOLIDATION_CONFIG.weightAccessRecency,
+          weightAccessFrequency: config.memoryConsolidation?.weightAccessFrequency ?? DEFAULT_CONSOLIDATION_CONFIG.weightAccessFrequency,
+          weightInjectionUse: config.memoryConsolidation?.weightInjectionUse ?? DEFAULT_CONSOLIDATION_CONFIG.weightInjectionUse,
+          weightConfirmation: config.memoryConsolidation?.weightConfirmation ?? DEFAULT_CONSOLIDATION_CONFIG.weightConfirmation,
+          weightBadRecall: config.memoryConsolidation?.weightBadRecall ?? DEFAULT_CONSOLIDATION_CONFIG.weightBadRecall,
+          weightTierStability: config.memoryConsolidation?.weightTierStability ?? DEFAULT_CONSOLIDATION_CONFIG.weightTierStability,
+          promoteThreshold: config.memoryConsolidation?.promoteThreshold ?? DEFAULT_CONSOLIDATION_CONFIG.promoteThreshold,
+          archiveThreshold: config.memoryConsolidation?.archiveThreshold ?? DEFAULT_CONSOLIDATION_CONFIG.archiveThreshold,
+          suppressThreshold: config.memoryConsolidation?.suppressThreshold ?? DEFAULT_CONSOLIDATION_CONFIG.suppressThreshold,
+          minArchiveAgeDays: config.memoryConsolidation?.minArchiveAgeDays ?? DEFAULT_CONSOLIDATION_CONFIG.minArchiveAgeDays,
+          maxMemoriesPerSweep: config.memoryConsolidation?.maxMemoriesPerSweep ?? DEFAULT_CONSOLIDATION_CONFIG.maxMemoriesPerSweep,
+          dryRun: false,
+        };
+        const sweepCfg: SweepConfig = {
+          maxMemoriesPerSweep: config.memorySweep?.maxMemoriesPerSweep ?? DEFAULT_SWEEP_CONFIG.maxMemoriesPerSweep,
+          staleThreshold: config.memorySweep?.staleThreshold ?? DEFAULT_SWEEP_CONFIG.staleThreshold,
+          healthThreshold: config.memorySweep?.healthThreshold ?? DEFAULT_SWEEP_CONFIG.healthThreshold,
+        };
+        const pipelineCfg: PipelineConfig = {
+          sweep: sweepCfg,
+          consolidation: consolidationCfg.enabled ? consolidationCfg : undefined,
+          compaction: undefined, // compaction runs via its own handler above
+        };
+
+        runBackgroundPipeline({
+          store,
+          embedder,
+          config: pipelineCfg,
+          logger: api.logger,
+          stateDir,
+        }).catch((err) => {
+          api.logger.warn(`background-pipeline [auto]: failed: ${String(err)}`);
+        });
+      });
+    }
+
     // ========================================================================
     // Register CLI Commands
     // ========================================================================
@@ -4262,6 +4336,40 @@ export function parsePluginConfig(value: unknown): PluginConfig {
         minClusterSize: parsePositiveInt(raw.minClusterSize) ?? 2,
         maxMemoriesToScan: parsePositiveInt(raw.maxMemoriesToScan) ?? 200,
         cooldownHours: parsePositiveInt(raw.cooldownHours) ?? 24,
+      };
+    })(),
+    memoryConsolidation: (() => {
+      const raw =
+        typeof cfg.memoryConsolidation === "object" && cfg.memoryConsolidation !== null
+          ? (cfg.memoryConsolidation as Record<string, unknown>)
+          : null;
+      if (!raw) return undefined;
+      return {
+        enabled: raw.enabled === true,
+        cooldownHours: parsePositiveInt(raw.cooldownHours) ?? 24,
+        weightAccessRecency: typeof raw.weightAccessRecency === "number" ? raw.weightAccessRecency : undefined,
+        weightAccessFrequency: typeof raw.weightAccessFrequency === "number" ? raw.weightAccessFrequency : undefined,
+        weightInjectionUse: typeof raw.weightInjectionUse === "number" ? raw.weightInjectionUse : undefined,
+        weightConfirmation: typeof raw.weightConfirmation === "number" ? raw.weightConfirmation : undefined,
+        weightBadRecall: typeof raw.weightBadRecall === "number" ? raw.weightBadRecall : undefined,
+        weightTierStability: typeof raw.weightTierStability === "number" ? raw.weightTierStability : undefined,
+        promoteThreshold: typeof raw.promoteThreshold === "number" ? raw.promoteThreshold : undefined,
+        archiveThreshold: typeof raw.archiveThreshold === "number" ? raw.archiveThreshold : undefined,
+        suppressThreshold: parsePositiveInt(raw.suppressThreshold) ?? undefined,
+        minArchiveAgeDays: parsePositiveInt(raw.minArchiveAgeDays) ?? undefined,
+        maxMemoriesPerSweep: parsePositiveInt(raw.maxMemoriesPerSweep) ?? undefined,
+      };
+    })(),
+    memorySweep: (() => {
+      const raw =
+        typeof cfg.memorySweep === "object" && cfg.memorySweep !== null
+          ? (cfg.memorySweep as Record<string, unknown>)
+          : null;
+      if (!raw) return undefined;
+      return {
+        maxMemoriesPerSweep: parsePositiveInt(raw.maxMemoriesPerSweep) ?? undefined,
+        staleThreshold: typeof raw.staleThreshold === "number" ? raw.staleThreshold : undefined,
+        healthThreshold: typeof raw.healthThreshold === "number" ? raw.healthThreshold : undefined,
       };
     })(),
     sessionCompression:

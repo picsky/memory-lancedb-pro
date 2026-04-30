@@ -836,6 +836,125 @@
           }
         }
       },
+      "memoryConsolidation": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "Background consolidation: evaluate memories using multi-factor scoring (access patterns, confirmation, contradictions) and auto-promote important memories to core tier or archive stale ones.",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "default": false,
+            "description": "Enable automatic consolidation at gateway startup (respects cooldownHours)"
+          },
+          "cooldownHours": {
+            "type": "integer",
+            "default": 24,
+            "minimum": 1,
+            "description": "Minimum hours between automatic consolidation runs"
+          },
+          "weightAccessRecency": {
+            "type": "number",
+            "default": 0.25,
+            "minimum": 0,
+            "maximum": 1,
+            "description": "Weight for access recency component (how recently a memory was recalled)"
+          },
+          "weightAccessFrequency": {
+            "type": "number",
+            "default": 0.2,
+            "minimum": 0,
+            "maximum": 1,
+            "description": "Weight for access frequency component (how often a memory was recalled)"
+          },
+          "weightInjectionUse": {
+            "type": "number",
+            "default": 0.2,
+            "minimum": 0,
+            "maximum": 1,
+            "description": "Weight for injection use component (how often injected into context)"
+          },
+          "weightConfirmation": {
+            "type": "number",
+            "default": 0.15,
+            "minimum": 0,
+            "maximum": 1,
+            "description": "Weight for confirmation component (confirmed useful recalls)"
+          },
+          "weightBadRecall": {
+            "type": "number",
+            "default": 0.15,
+            "minimum": 0,
+            "maximum": 1,
+            "description": "Weight for bad recall penalty (contradicted or useless recalls)"
+          },
+          "weightTierStability": {
+            "type": "number",
+            "default": 0.05,
+            "minimum": 0,
+            "maximum": 1,
+            "description": "Weight for tier stability (how long a memory stayed in its tier)"
+          },
+          "promoteThreshold": {
+            "type": "number",
+            "default": 0.75,
+            "minimum": 0,
+            "maximum": 1,
+            "description": "Consolidation score threshold for promotion to core tier"
+          },
+          "archiveThreshold": {
+            "type": "number",
+            "default": 0.15,
+            "minimum": 0,
+            "maximum": 1,
+            "description": "Consolidation score threshold for archive candidacy"
+          },
+          "suppressThreshold": {
+            "type": "integer",
+            "default": 5,
+            "minimum": 1,
+            "description": "Bad recall count that triggers automatic suppression"
+          },
+          "minArchiveAgeDays": {
+            "type": "integer",
+            "default": 30,
+            "minimum": 1,
+            "description": "Minimum age before a low-scoring memory can be archived"
+          },
+          "maxMemoriesPerSweep": {
+            "type": "integer",
+            "default": 500,
+            "minimum": 1,
+            "description": "Maximum memories to evaluate per consolidation sweep"
+          }
+        }
+      },
+      "memorySweep": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "Lightweight background sweep: compute memory health, detect stale entries, and auto-recover archived memories when health is low.",
+        "properties": {
+          "maxMemoriesPerSweep": {
+            "type": "integer",
+            "default": 200,
+            "minimum": 1,
+            "description": "Maximum memories to evaluate per sweep"
+          },
+          "staleThreshold": {
+            "type": "number",
+            "default": 0.2,
+            "minimum": 0,
+            "maximum": 1,
+            "description": "Decay score below which a memory is considered stale"
+          },
+          "healthThreshold": {
+            "type": "number",
+            "default": 0.3,
+            "minimum": 0,
+            "maximum": 1,
+            "description": "Memory health threshold — below this triggers auto-recovery of archived memories"
+          }
+        }
+      },
       "sessionCompression": {
         "type": "object",
         "additionalProperties": false,
@@ -1386,6 +1505,30 @@
     "memoryCompaction.cooldownHours": {
       "label": "Cooldown (hours)",
       "help": "Minimum gap between automatic compaction runs",
+      "advanced": true
+    },
+    "memoryConsolidation.enabled": {
+      "label": "Auto Consolidation",
+      "help": "Automatically evaluate and promote important memories at gateway startup. Uses multi-factor scoring based on access patterns, confirmations, and contradictions."
+    },
+    "memoryConsolidation.promoteThreshold": {
+      "label": "Promote Threshold",
+      "help": "Consolidation score above which a memory is promoted to core tier (0–1). Higher = more selective.",
+      "advanced": true
+    },
+    "memoryConsolidation.archiveThreshold": {
+      "label": "Archive Threshold",
+      "help": "Consolidation score below which a memory becomes an archive candidate (0–1). Lower = more aggressive archiving.",
+      "advanced": true
+    },
+    "memoryConsolidation.cooldownHours": {
+      "label": "Consolidation Cooldown (hours)",
+      "help": "Minimum gap between automatic consolidation runs",
+      "advanced": true
+    },
+    "memorySweep.healthThreshold": {
+      "label": "Health Threshold",
+      "help": "Memory health score below which auto-recovery is triggered. Lower = more tolerant of stale memories.",
       "advanced": true
     },
     "sessionCompression.enabled": {
