@@ -2304,7 +2304,16 @@ const memoryLanceDBProPlugin = {
           .then(async (should) => {
             if (!should) return;
             await recordCompactionRun(compactionStateFile);
+            const t0 = Date.now();
             const result = await runCompaction(store, embedder, compactionCfg, undefined, api.logger);
+            metricsCollector.recordCompactionRun({
+              latencyMs: Date.now() - t0,
+              scanned: result.scanned,
+              clusters: result.clustersFound,
+              deleted: result.memoriesDeleted,
+              created: result.memoriesCreated,
+              dryRun: result.dryRun,
+            });
             if (result.clustersFound > 0) {
               api.logger.info(
                 `memory-compactor [auto]: compacted ${result.memoriesDeleted} → ${result.memoriesCreated} entries`,

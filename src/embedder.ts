@@ -8,6 +8,7 @@
  * these fields, so we pass them via a narrow `any` cast.
  */
 
+import type { MetricsCollector } from "./metrics-collector.js";
 import OpenAI from "openai";
 import { createHash } from "node:crypto";
 import { smartChunk } from "./chunker.js";
@@ -125,6 +126,8 @@ export interface EmbeddingConfig {
   omitDimensions?: boolean;
   /** Enable automatic chunking for documents exceeding context limits (default: true) */
   chunking?: boolean;
+  /** Optional metrics collector for instrumentation */
+  metricsCollector?: MetricsCollector;
 }
 
 type EmbeddingProviderProfile =
@@ -511,6 +514,7 @@ export class Embedder {
   private readonly _omitDimensions: boolean;
   /** Enable automatic chunking for long documents (default: true) */
   private readonly _autoChunk: boolean;
+  private readonly _metricsCollector?: import("./metrics-collector.js").MetricsCollector;
 
   constructor(config: EmbeddingConfig & { chunking?: boolean }) {
     // Normalize apiKey to array and resolve environment variables
@@ -526,6 +530,7 @@ export class Embedder {
     this._omitDimensions = config.omitDimensions === true;
     // Enable auto-chunking by default for better handling of long documents
     this._autoChunk = config.chunking !== false;
+    this._metricsCollector = config.metricsCollector;
     const profile = detectEmbeddingProviderProfile(this._baseURL, this._model);
     this._capabilities = getEmbeddingCapabilities(profile);
 
@@ -832,11 +837,49 @@ export class Embedder {
   // --------------------------------------------------------------------------
 
   async embedQuery(text: string, signal?: AbortSignal): Promise<number[]> {
-    return this.withTimeout((sig) => this.embedSingle(text, this._taskQuery, 0, sig), signal);
+    const t0 = Date.now();
+    try {
+      const result = await this.withTimeout((sig) => this.embedSingle(text, this._taskQuery, 0, sig), signal);
+      this._metricsCollector?.recordEmbeddingCall({
+        latencyMs: Date.now() - t0,
+        cacheHit: false, // embedSingle handles cache internally
+        timeout: false,
+        error: false,
+      });
+      return result;
+    } catch (e) {
+      const isTimeout = e instanceof Error && /timeout|timed?\s*out/i.test(e.message);
+      this._metricsCollector?.recordEmbeddingCall({
+        latencyMs: Date.now() - t0,
+        cacheHit: false,
+        timeout: isTimeout,
+        error: !isTimeout,
+      });
+      throw e;
+    }
   }
 
   async embedPassage(text: string, signal?: AbortSignal): Promise<number[]> {
-    return this.withTimeout((sig) => this.embedSingle(text, this._taskPassage, 0, sig), signal);
+    const t0 = Date.now();
+    try {
+      const result = await this.withTimeout((sig) => this.embedSingle(text, this._taskPassage, 0, sig), signal);
+      this._metricsCollector?.recordEmbeddingCall({
+        latencyMs: Date.now() - t0,
+        cacheHit: false,
+        timeout: false,
+        error: false,
+      });
+      return result;
+    } catch (e) {
+      const isTimeout = e instanceof Error && /timeout|timed?\s*out/i.test(e.message);
+      this._metricsCollector?.recordEmbeddingCall({
+        latencyMs: Date.now() - t0,
+        cacheHit: false,
+        timeout: isTimeout,
+        error: !isTimeout,
+      });
+      throw e;
+    }
   }
 
   // Note: embedBatchQuery/embedBatchPassage are NOT wrapped with withTimeout because
@@ -844,11 +887,49 @@ export class Embedder {
   // EMBED_TIMEOUT_MS regardless of how many texts succeed. Individual text embedding
   // within the batch is protected by the SDK's own timeout handling.
   async embedBatchQuery(texts: string[], signal?: AbortSignal): Promise<number[][]> {
-    return this.embedMany(texts, this._taskQuery, signal);
+    const t0 = Date.now();
+    try {
+      const result = await this.embedMany(texts, this._taskQuery, signal);
+      this._metricsCollector?.recordEmbeddingCall({
+        latencyMs: Date.now() - t0,
+        cacheHit: false,
+        timeout: false,
+        error: false,
+      });
+      return result;
+    } catch (e) {
+      const isTimeout = e instanceof Error && /timeout|timed?\s*out/i.test(e.message);
+      this._metricsCollector?.recordEmbeddingCall({
+        latencyMs: Date.now() - t0,
+        cacheHit: false,
+        timeout: isTimeout,
+        error: !isTimeout,
+      });
+      throw e;
+    }
   }
 
   async embedBatchPassage(texts: string[], signal?: AbortSignal): Promise<number[][]> {
-    return this.embedMany(texts, this._taskPassage, signal);
+    const t0 = Date.now();
+    try {
+      const result = await this.embedMany(texts, this._taskPassage, signal);
+      this._metricsCollector?.recordEmbeddingCall({
+        latencyMs: Date.now() - t0,
+        cacheHit: false,
+        timeout: false,
+        error: false,
+      });
+      return result;
+    } catch (e) {
+      const isTimeout = e instanceof Error && /timeout|timed?\s*out/i.test(e.message);
+      this._metricsCollector?.recordEmbeddingCall({
+        latencyMs: Date.now() - t0,
+        cacheHit: false,
+        timeout: isTimeout,
+        error: !isTimeout,
+      });
+      throw e;
+    }
   }
 
   // --------------------------------------------------------------------------

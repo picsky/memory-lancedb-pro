@@ -15,6 +15,7 @@ import {
   unlinkSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
+import type { MetricsCollector } from "./metrics-collector.js";
 import { buildSmartMetadata, isMemoryActiveAt, parseSmartMetadata, stringifySmartMetadata } from "./smart-metadata.js";
 import { clampInt } from "./utils.js";
 
@@ -41,6 +42,7 @@ export interface MemorySearchResult {
 export interface StoreConfig {
   dbPath: string;
   vectorDim: number;
+  metricsCollector?: MetricsCollector;
 }
 
 export interface MetadataPatch {
@@ -480,13 +482,22 @@ export class MemoryStore {
       metadata: entry.metadata || "{}",
     };
 
+    const t0 = Date.now();
     return this.runWithFileLock(async () => {
       try {
         await this.table!.add([fullEntry]);
+        this.config.metricsCollector?.recordStorageOperation({
+          operation: "write",
+          latencyMs: Date.now() - t0,
+        });
       } catch (err: unknown) {
         const e = err as { code?: string; message?: string };
         const code = e.code || "";
         const message = e.message || String(err);
+        this.config.metricsCollector?.recordStorageOperation({
+          operation: "write",
+          latencyMs: Date.now() - t0,
+        });
         throw new Error(
           `Failed to store memory in "${this.config.dbPath}": ${code} ${message}`,
         );
@@ -524,12 +535,21 @@ export class MemoryStore {
     }));
     
     // Single lock acquisition for all entries
+    const t0 = Date.now();
     return this.runWithFileLock(async () => {
       try {
         await this.table!.add(fullEntries);
+        this.config.metricsCollector?.recordStorageOperation({
+          operation: "bulkWrite",
+          latencyMs: Date.now() - t0,
+        });
       } catch (err: any) {
         const code = err.code || "";
         const message = err.message || String(err);
+        this.config.metricsCollector?.recordStorageOperation({
+          operation: "bulkWrite",
+          latencyMs: Date.now() - t0,
+        });
         throw new Error(
           `Failed to bulk store ${fullEntries.length} memories: ${code} ${message}`,
         );
@@ -960,7 +980,12 @@ export class MemoryStore {
     }
 
     return this.runWithFileLock(async () => {
+      const t0 = Date.now();
       await this.table!.delete(`id = '${resolvedId}'`);
+      this.config.metricsCollector?.recordStorageOperation({
+        operation: "delete",
+        latencyMs: Date.now() - t0,
+      });
       return true;
     });
   }
@@ -1186,6 +1211,8 @@ export class MemoryStore {
       // Serialize updates per store instance to avoid stale rollback races.
       // If the add fails after delete, attempt best-effort recovery without
       // overwriting a newer concurrent successful update.
+      const t0 = Date.now();
+      let rollback = false;
       const rollbackCandidate =
         (await this.getById(original.id).catch(() => null)) ?? original;
       const resolvedId = escapeSqlLiteral(row.id as string);
@@ -1195,15 +1222,26 @@ export class MemoryStore {
       } catch (addError) {
         const current = await this.getById(original.id).catch(() => null);
         if (current) {
+          this.config.metricsCollector?.recordStorageOperation({
+            operation: "update",
+            latencyMs: Date.now() - t0,
+            rollback: false,
+          });
           throw new Error(
             `Failed to update memory ${id}: write failed after delete, but an existing record was preserved. ` +
             `Write error: ${addError instanceof Error ? addError.message : String(addError)}`,
           );
         }
 
+        rollback = true;
         try {
           await this.table!.add([rollbackCandidate]);
         } catch (rollbackError) {
+          this.config.metricsCollector?.recordStorageOperation({
+            operation: "update",
+            latencyMs: Date.now() - t0,
+            rollback: true,
+          });
           throw new Error(
             `Failed to update memory ${id}: write failed after delete, and rollback also failed. ` +
             `Write error: ${addError instanceof Error ? addError.message : String(addError)}. ` +
@@ -1211,11 +1249,21 @@ export class MemoryStore {
           );
         }
 
+        this.config.metricsCollector?.recordStorageOperation({
+          operation: "update",
+          latencyMs: Date.now() - t0,
+          rollback: true,
+        });
         throw new Error(
           `Failed to update memory ${id}: write failed after delete, latest available record restored. ` +
           `Write error: ${addError instanceof Error ? addError.message : String(addError)}`,
         );
       }
+
+      this.config.metricsCollector?.recordStorageOperation({
+        operation: "update",
+        latencyMs: Date.now() - t0,
+      });
 
       return updated;
     }));
