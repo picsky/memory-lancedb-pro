@@ -75,6 +75,7 @@ import { createDecayEngine, DEFAULT_DECAY_CONFIG } from "./src/decay-engine.js";
 import { createTierManager, DEFAULT_TIER_CONFIG } from "./src/tier-manager.js";
 import { createMemoryUpgrader } from "./src/memory-upgrader.js";
 import { MetricsCollector } from "./src/metrics-collector.js";
+import { RetrievalStatsCollector } from "./src/retrieval-stats.js";
 import {
   buildSmartMetadata,
   parseSmartMetadata,
@@ -1824,8 +1825,9 @@ function _initPluginState(api: OpenClawPluginApi): PluginSingletonState {
 
   // Unified metrics collector — bridges retrieval, admission, storage, embedding, compaction
   const metricsCollector = new MetricsCollector();
-  retriever.setStatsCollector(metricsCollector as any);
-  metricsCollector.setRetrievalStatsCollector(retriever.getStatsCollector());
+  const retrievalCollector = new RetrievalStatsCollector();
+  retriever.setStatsCollector(retrievalCollector);
+  metricsCollector.setRetrievalStatsCollector(retrievalCollector);
 
   const clawteamScopes = parseClawteamScopes(process.env.CLAWTEAM_MEMORY_SCOPE);
   if (clawteamScopes.length > 0) {
