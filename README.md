@@ -13,7 +13,7 @@ A LanceDB-backed OpenClaw memory plugin that stores preferences, decisions, and 
 [![npm version](https://img.shields.io/npm/v/memory-lancedb-pro)](https://www.npmjs.com/package/memory-lancedb-pro)
 [![LanceDB](https://img.shields.io/badge/LanceDB-Vectorstore-orange)](https://lancedb.com)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-<h2>⚡ <a href="https://github.com/CortexReach/memory-lancedb-pro/releases/tag/v1.1.1">v1.1.1 — Enhanced Memory with Consolidation Scoring & Background Pipeline</a></h2>
+<h2>⚡ <a href="https://github.com/CortexReach/memory-lancedb-pro/releases/tag/v1.1.1">v1.1.1 — Enhanced Memory with Consolidation, Compaction, Admission Control & Adaptive Recall</a></h2>
 
 <p>
  ✅ Fully adapted for OpenClaw 2026.3+ new plugin architecture<br>
@@ -58,9 +58,9 @@ That's the difference an **AI Memory Assistant** makes — it learns your style,
 
 | | What you get |
 |---|---|
-| **Auto-Capture** | Your agent learns from every conversation — no manual `memory_store` needed |
-| **Smart Extraction** | LLM-powered 6-category classification: profiles, preferences, entities, events, cases, patterns |
-| **Intelligent Forgetting** | Weibull decay model — important memories stay, noise naturally fades away |
+| **Auto-Capture** | Your agent learns from every conversation — no manual `memory_store` needed. Rate-limited to prevent excessive API calls. |
+| **Smart Extraction** | LLM-powered 6-category classification: profiles, preferences, entities, events, cases, patterns. Optional admission control gating. |
+| **Intelligent Forgetting** | Weibull decay model — important memories stay, noise naturally fades away. 5-layer noise defense. |
 | **Hybrid Retrieval** | Vector + BM25 full-text search, fused with cross-encoder reranking |
 | **Context Injection** | Relevant memories automatically surface before each reply |
 | **Multi-Scope Isolation** | Per-agent, per-user, per-project memory boundaries |
@@ -115,9 +115,9 @@ Add to your `openclaw.json`:
           "autoCapture": true,
           "autoRecall": true,
           "smartExtraction": true,
-          "extractMinMessages": 2,
+          "extractMinMessages": 4,
           "extractMaxChars": 8000,
-          "sessionMemory": { "enabled": false }
+          "sessionStrategy": "none"
         }
       }
     }
@@ -128,8 +128,8 @@ Add to your `openclaw.json`:
 **Why these defaults?**
 - `autoCapture` + `smartExtraction` → your agent learns from every conversation automatically
 - `autoRecall` → relevant memories are injected before each reply
-- `extractMinMessages: 2` → extraction triggers in normal two-turn chats
-- `sessionMemory.enabled: false` → avoids polluting retrieval with session summaries on day one
+- `extractMinMessages: 4` → extraction triggers after a meaningful conversation window
+- `sessionStrategy: "none"` → avoids polluting retrieval with session summaries on day one
 
 ---
 
@@ -207,8 +207,8 @@ Requirements:
 3. Use Jina for reranker
 4. Use gpt-4o-mini for the smart-extraction LLM
 5. Enable autoCapture, autoRecall, smartExtraction
-6. extractMinMessages=2
-7. sessionMemory.enabled=false
+6. extractMinMessages=4
+7. sessionStrategy=none
 8. captureAssistant=false
 9. retrieval mode=hybrid, vectorWeight=0.7, bm25Weight=0.3
 10. rerank=cross-encoder, candidatePoolSize=12, minScore=0.6, hardMinScore=0.62
@@ -256,7 +256,7 @@ Install this skill and your AI agent (Claude Code or OpenClaw) gains deep knowle
 
 - **Guided 7-step configuration workflow** with 4 deployment plans:
   - Full Power (Jina + OpenAI) / Budget (free SiliconFlow reranker) / Simple (OpenAI only) / Fully Local (Ollama, zero API cost)
-- **All 9 MCP tools** used correctly: `memory_recall`, `memory_store`, `memory_forget`, `memory_update`, `memory_stats`, `memory_list`, `self_improvement_log`, `self_improvement_extract_skill`, `self_improvement_review` *(full toolset requires `enableManagementTools: true` — the default Quick Start config exposes the 4 core tools)*
+- **All 9 MCP tools** used correctly: `memory_recall`, `memory_store`, `memory_forget`, `memory_update`, `memory_stats`, `memory_list`, `memory_promote`, `memory_archive`, `memory_compact`, `memory_debug`, `memory_explain_rank` *(full toolset requires `enableManagementTools: true` — the default Quick Start config exposes the 4 core tools)*
 - **Common pitfall avoidance**: workspace plugin enablement, `autoRecall` default-false, jiti cache, env vars, scope isolation, and more
 
 **Install for Claude Code:**
@@ -289,7 +289,7 @@ git clone https://github.com/CortexReach/memory-lancedb-pro-skill.git ~/.opencla
 ┌─────────────────────────────────────────────────────────┐
 │                   index.ts (Entry Point)                │
 │  Plugin Registration · Config Parsing · Lifecycle Hooks  │
-│  · Background Pipeline                                   │
+│  · Background Pipeline · Rate Limiting · Dedup Guard    │
 └────────┬──────────┬──────────┬──────────┬───────────────┘
          │          │          │          │
     ┌────▼───┐ ┌────▼───┐ ┌───▼────┐ ┌──▼──────────┐
@@ -299,8 +299,10 @@ git clone https://github.com/CortexReach/memory-lancedb-pro-skill.git ~/.opencla
          │                     │              │
     ┌────▼───┐           ┌─────▼──────────┐   │
     │migrate │           │noise-filter.ts │   │
-    │ .ts    │           │adaptive-       │   │
-    └────────┘           │retrieval.ts    │   │
+    │ .ts    │           │noise-          │   │
+    └────────┘           │prototypes.ts   │   │
+                         │adaptive-       │   │
+                         │retrieval.ts    │   │
                          └────────────────┘   │
     ┌─────────────┐   ┌──────────┐   ┌───────▼────────┐
     │  tools.ts   │   │  cli.ts  │   │background-     │
@@ -309,6 +311,14 @@ git clone https://github.com/CortexReach/memory-lancedb-pro-skill.git ~/.opencla
     ┌──────────────────┐  ┌──────────────────────┐
     │access-tracker.ts │  │memory-consolidation. │
     │(Dynamic confid.) │  │ts (6-dim scoring)     │
+    └──────────────────┘  └──────────────────────┘
+    ┌──────────────────┐  ┌──────────────────────┐
+    │smart-            │  │admission-            │
+    │extractor.ts      │  │controller.ts         │
+    └──────────────────┘  └──────────────────────┘
+    ┌──────────────────┐  ┌──────────────────────┐
+    │session-          │  │auto-capture-         │
+    │compression.ts    │  │cleanup.ts            │
     └──────────────────┘  └──────────────────────┘
 ```
 
@@ -330,12 +340,16 @@ git clone https://github.com/CortexReach/memory-lancedb-pro-skill.git ~/.opencla
 | `src/noise-filter.ts` | Filters out agent refusals, meta-questions, greetings, and low-quality content |
 | `src/adaptive-retrieval.ts` | Determines whether a query needs memory retrieval |
 | `src/migrate.ts` | Migration from built-in `memory-lancedb` to Pro |
-| `src/smart-extractor.ts` | LLM-powered 6-category extraction with L0/L1/L2 layered storage and two-stage dedup |
+| `src/smart-extractor.ts` | LLM-powered 6-category extraction with L0/L1/L2 layered storage, two-stage dedup, noise filtering, and rate limiting |
 | `src/decay-engine.ts` | Weibull stretched-exponential decay model |
 | `src/tier-manager.ts` | Three-tier promotion/demotion: Peripheral ↔ Working ↔ Core |
 | `src/memory-consolidation.ts` | 6-dimension consolidation scoring engine: access patterns, confirmations, contradictions |
 | `src/background-scheduler.ts` | 3-tier background pipeline: Sweep → Consolidate → Compact |
 | `src/access-tracker.ts` | Dynamic confidence updates: confirmed use boosts, contradictions penalize, long-term non-use decays |
+| `src/admission-controller.ts` | A-MAC-style admission gating on the write path: utility, novelty, recency, type priors |
+| `src/noise-prototypes.ts` | Embedding-based noise prototype bank with cosine similarity matching |
+| `src/auto-capture-cleanup.ts` | Input text cleaning: strips envelopes, metadata, runtime wrappers, message IDs |
+| `src/session-compression.ts` | Scores and compresses conversation texts before extraction |
 
 </details>
 
@@ -378,8 +392,12 @@ Query → BM25 FTS ─────┘
 
 - **LLM-Powered 6-Category Extraction**: profile, preferences, entities, events, cases, patterns
 - **L0/L1/L2 Layered Storage**: L0 (one-sentence index) → L1 (structured summary) → L2 (full narrative)
-- **Two-Stage Dedup**: vector similarity pre-filter (≥0.7) → LLM semantic decision (CREATE/MERGE/SKIP)
+- **Two-Stage Dedup**: vector similarity pre-filter (≥0.7) → LLM semantic decision (CREATE/MERGE/SKIP/SUPERSEDE/SUPPORT/CONTEXTUALIZE/CONTRADICT)
 - **Category-Aware Merge**: `profile` always merges, `events`/`cases` are append-only
+- **Rate Limiting**: 10 extractions/hour global + 5-min per-session cooldown (configurable)
+- **Admission Control** (optional): A-MAC-style gating scores candidates on utility, novelty, recency, confidence, and type priors before persistence
+- **Noise Filtering**: 5-layer defense-in-depth — input cleaning, embedding pre-check, LLM extraction, regex fallback, embedding-based NoisePrototypeBank
+- **Session Compression** (optional): scores conversation texts before extraction, prioritizing corrections, decisions, and tool calls
 
 ### Memory Lifecycle Management (v1.1.0)
 
@@ -396,14 +414,17 @@ Query → BM25 FTS ─────┘
 
 ### Auto-Capture & Auto-Recall
 
-- **Auto-Capture** (`agent_end`): extracts preference/fact/decision/entity from conversations, deduplicates, stores up to 3 per turn
-- **Auto-Recall** (`before_prompt_build`): injects `<relevant-memories>` context (up to 3 entries)
+- **Auto-Capture** (`agent_end`): extracts profile/preferences/entities/events/cases/patterns from conversations, deduplicates, stores up to 3 per turn
+- **Auto-Recall** (`before_prompt_build`): injects `<relevant-memories>` context (up to 3 entries, configurable via `autoRecallMaxItems`)
+- **Recall Modes** (`recallMode`): `full` (L2 content), `summary` (L0 abstracts only), `adaptive` (intent-based routing), `off`
 
 > **Note (v1.1.0-beta.9+):** Auto-recall now uses the `before_prompt_build` hook instead of the deprecated `before_agent_start`. See [Hook Adaptation](#hook-adaptation-openclaw-20263) below for details.
 
 ### Noise Filtering & Adaptive Retrieval
 
-- Filters low-quality content: agent refusals, meta-questions, greetings
+- **5-layer defense-in-depth**: L1 input cleaning → L2 embedding pre-check → L3 LLM extraction → L4 regex fallback → L5 embedding-based NoisePrototypeBank
+- Filters low-quality content: agent refusals, meta-questions, greetings, platform/operational noise
+- Platform noise handling: strips `System:` lines, message IDs, model-switch events at input; regex + prototype matching at extraction
 - Skips retrieval for greetings, slash commands, simple confirmations, emoji
 - Forces retrieval for memory keywords ("remember", "previously", "last time")
 - CJK-aware thresholds (Chinese: 6 chars vs English: 15 chars)
@@ -424,7 +445,7 @@ When the LLM's one-time `importance` score doesn't match actual usage patterns, 
 **Output actions**:
 - `score >= 0.75` → promote to core tier
 - `score <= 0.15` + age >= 30 days → mark for archive
-- `bad_recall_count >= 5` → auto-suppress
+- `bad_recall_count >= 5` → auto-suppress (configurable via `memoryConsolidation.suppressThreshold`)
 
 ### Dynamic Confidence Updates (New)
 
@@ -438,9 +459,9 @@ Every recall outcome adjusts the memory's `confidence` value in real time:
 
 | Phase | Trigger | Action |
 |---|---|---|
-| **Sweep** | Every gateway_start | Compute decay scores, mark stale entries, compute health |
+| **Sweep** | Every gateway_start | Compute decay scores, mark stale entries, compute health, auto-recover archived memories |
 | **Consolidate** | 24h cooldown | 6-dimension consolidation scoring + tier migration |
-| **Compact** | 24h cooldown (existing) | LSH clustering + similarity merging |
+| **Compact** | 24h cooldown | LSH clustering + similarity merging + progressive summarization |
 
 ### Memory Health & Auto-Recovery (New)
 
@@ -498,6 +519,7 @@ Every recall outcome adjusts the memory's `confidence` value in real time:
   "dbPath": "~/.openclaw/memory/lancedb-pro",
   "autoCapture": true,
   "autoRecall": true,
+  "recallMode": "full",
   "retrieval": {
     "mode": "hybrid",
     "vectorWeight": 0.7,
@@ -530,18 +552,22 @@ Every recall outcome adjusts the memory's `confidence` value in real time:
     }
   },
   "sessionStrategy": "none",
-  "sessionMemory": {
-    "enabled": false,
-    "messageCount": 15
-  },
   "smartExtraction": true,
   "llm": {
     "apiKey": "${OPENAI_API_KEY}",
     "model": "gpt-4o-mini",
     "baseURL": "https://api.openai.com/v1"
   },
-  "extractMinMessages": 2,
-  "extractMaxChars": 8000
+  "extractMinMessages": 4,
+  "extractMaxChars": 8000,
+  "extractionThrottle": {
+    "maxExtractionsPerHour": 10,
+    "sessionCooldownMs": 300000
+  },
+  "memoryConsolidation": { "enabled": false },
+  "memoryCompaction": { "enabled": false },
+  "memorySweep": { "healthThreshold": 0.3 },
+  "mdMirror": { "enabled": false }
 }
 ```
 
@@ -558,6 +584,7 @@ Works with **any OpenAI-compatible embedding API**:
 | **OpenAI** | `text-embedding-3-small` | `https://api.openai.com/v1` | 1536 |
 | **Voyage** | `voyage-4-lite` / `voyage-4` | `https://api.voyageai.com/v1` | 1024 / 1024 |
 | **Google Gemini** | `gemini-embedding-001` | `https://generativelanguage.googleapis.com/v1beta/openai/` | 3072 |
+| **NVIDIA NIM** | `nvidia/nv-embedqa-e5-v5` | `https://integrate.api.nvidia.com/v1` | 1024 |
 | **Ollama** (local) | `nomic-embed-text` | `http://localhost:11434/v1` | provider-specific |
 
 </details>
@@ -573,8 +600,10 @@ Cross-encoder reranking supports multiple providers via `rerankProvider`:
 | **SiliconFlow** (free tier available) | `siliconflow` | `BAAI/bge-reranker-v2-m3` |
 | **Voyage AI** | `voyage` | `rerank-2.5` |
 | **Pinecone** | `pinecone` | `bge-reranker-v2-m3` |
+| **DashScope** | `dashscope` | `gte-rerank-v2` |
+| **HuggingFace TEI** | `tei` | Any TEI-deployed reranker |
 
-Any Jina-compatible rerank endpoint also works — set `rerankProvider: "jina"` and point `rerankEndpoint` to your service (e.g., Hugging Face TEI, DashScope `qwen3-rerank`).
+> Any Jina-compatible endpoint also works — set `rerankProvider: "jina"` and point `rerankEndpoint` to your service.
 
 </details>
 
@@ -593,8 +622,12 @@ When `smartExtraction` is enabled (default: `true`), the plugin uses an LLM to i
 | `llm.oauthProvider` | string | `openai-codex` | OAuth provider id used when `llm.auth` is `oauth` |
 | `llm.oauthPath` | string | `~/.openclaw/.memory-lancedb-pro/oauth.json` | OAuth token file used when `llm.auth` is `oauth` |
 | `llm.timeoutMs` | number | `30000` | LLM request timeout in milliseconds |
-| `extractMinMessages` | number | `2` | Minimum messages before extraction triggers |
+| `extractMinMessages` | number | `4` | Minimum messages before extraction triggers |
 | `extractMaxChars` | number | `8000` | Maximum characters sent to the LLM |
+| `sessionStrategy` | string | `none` | `memoryReflection` / `systemSessionMemory` / `none` |
+| `extractionThrottle.maxExtractionsPerHour` | number | `10` | Global rate limit for auto-capture extractions |
+| `extractionThrottle.sessionCooldownMs` | number | `300000` | Per-session cooldown (5 min) between extractions |
+| `extractionThrottle.skipLowValue` | boolean | `false` | Skip extraction for conversations with estimated value < 0.2 |
 
 
 OAuth `llm` config (use existing Codex / ChatGPT login cache for LLM calls):
@@ -637,6 +670,91 @@ Notes for `llm.auth: "oauth"`:
 </details>
 
 <details>
+<summary><strong>Admission Control (A-MAC)</strong></summary>
+
+Scores extraction candidates before persistence using utility, novelty, recency, confidence, and type priors.
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `admissionControl.enabled` | `false` | Enable admission gating on the write path |
+| `admissionControl.preset` | `balanced` | `balanced` / `conservative` / `high-recall` |
+| `admissionControl.rejectThreshold` | `0.45` | Candidates below this score are rejected |
+| `admissionControl.admitThreshold` | `0.6` | Candidates above this labeled as "likely add" |
+| `admissionControl.utilityMode` | `standalone` | `standalone` adds separate LLM utility scoring; `off` disables it |
+| `admissionControl.noveltyCandidatePoolSize` | `8` | Nearby memories compared for novelty scoring |
+
+</details>
+
+<details>
+<summary><strong>Memory Compaction (LSH Clustering)</strong></summary>
+
+Progressive summarization: periodically merge semantically similar old memories into refined entries.
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `memoryCompaction.enabled` | `false` | Enable automatic compaction at gateway startup |
+| `memoryCompaction.minAgeDays` | `7` | Only compact memories at least this many days old |
+| `memoryCompaction.similarityThreshold` | `0.88` | Cosine similarity threshold for clustering |
+| `memoryCompaction.cooldownHours` | `24` | Minimum hours between automatic compaction runs |
+| `memoryCompaction.maxMemoriesToScan` | `200` | Maximum memories to scan per compaction run |
+
+> Also available on-demand via the `memory_compact` tool (requires `enableManagementTools: true`).
+
+</details>
+
+<details>
+<summary><strong>Memory Sweep & Health</strong></summary>
+
+Lightweight background sweep: compute memory health, detect stale entries, auto-recover archived memories.
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `memorySweep.maxMemoriesPerSweep` | `200` | Maximum memories to evaluate per sweep |
+| `memorySweep.staleThreshold` | `0.2` | Decay score below which a memory is considered stale |
+| `memorySweep.healthThreshold` | `0.3` | Health threshold — below this triggers auto-recovery |
+
+</details>
+
+<details>
+<summary><strong>Session Compression</strong></summary>
+
+Scores and compresses conversation texts before extraction, prioritizing high-signal content.
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `sessionCompression.enabled` | `false` | Enable session compression before extraction |
+| `sessionCompression.minScoreToKeep` | `0.3` | Minimum text score threshold to keep |
+
+</details>
+
+<details>
+<summary><strong>USER.md Boundary Control</strong></summary>
+
+Route agent-prompt-owned facts to USER.md only, keeping LanceDB free of duplicate knowledge.
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `workspaceBoundary.userMdExclusive.enabled` | `false` | Skip storing USER.md-owned facts in LanceDB |
+| `workspaceBoundary.userMdExclusive.routeProfile` | `true` | Treat extracted profile memories as USER.md-only |
+| `workspaceBoundary.userMdExclusive.routeCanonicalName` | `true` | Treat canonical name facts as USER.md-only |
+| `workspaceBoundary.userMdExclusive.routeCanonicalAddressing` | `true` | Treat canonical addressing facts as USER.md-only |
+| `workspaceBoundary.userMdExclusive.filterRecall` | `true` | Filter USER.md-exclusive facts from plugin recall |
+
+</details>
+
+<details>
+<summary><strong>Markdown Mirror</strong></summary>
+
+Dual-write memories to human-readable Markdown alongside LanceDB storage.
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `mdMirror.enabled` | `false` | Enable dual-write to Markdown files |
+| `mdMirror.dir` | *(fallback)* | Fallback directory when agent workspace mapping is unavailable |
+
+</details>
+
+<details>
 <summary><strong>Access Reinforcement</strong></summary>
 
 Frequently recalled memories decay more slowly (spaced-repetition style).
@@ -649,22 +767,48 @@ Config keys (under `retrieval`):
 
 ---
 
+## Agent Tools (MCP)
+
+When `enableManagementTools: true`, the plugin exposes these tools to the agent:
+
+| Tool | Description |
+|------|-------------|
+| `memory_recall` | Search and retrieve relevant memories (core tool) |
+| `memory_store` | Store a new memory entry (core tool) |
+| `memory_forget` | Delete a memory by ID (core tool) |
+| `memory_update` | Update an existing memory (core tool) |
+| `memory_stats` | Show memory statistics with tier/category breakdown |
+| `memory_list` | List memories with filtering by scope/category/tier |
+| `memory_promote` | Manually promote a memory to a higher tier |
+| `memory_archive` | Manually archive a memory |
+| `memory_compact` | Trigger LSH clustering + similarity merging |
+| `memory_debug` | Debug retrieval for a query (show scoring pipeline) |
+| `memory_explain_rank` | Explain why a specific memory ranked where it did |
+
+> The default Quick Start config exposes only the 4 core tools. Enable full toolset with `enableManagementTools: true`.
+
+---
+
 ## CLI Commands
 
 ```bash
-openclaw memory-pro list [--scope global] [--category fact] [--limit 20] [--json]
-openclaw memory-pro search "query" [--scope global] [--limit 10] [--json]
-openclaw memory-pro stats [--scope global] [--json]
+openclaw memory-pro version
 openclaw memory-pro auth login [--provider openai-codex] [--model gpt-5.4] [--oauth-path /abs/path/oauth.json]
 openclaw memory-pro auth status
 openclaw memory-pro auth logout
+openclaw memory-pro list [--scope global] [--category fact] [--limit 20] [--json]
+openclaw memory-pro search "query" [--scope global] [--limit 10] [--json] [--debug]
+openclaw memory-pro stats [--scope global] [--json]
 openclaw memory-pro delete <id>
 openclaw memory-pro delete-bulk --scope global [--before 2025-01-01] [--dry-run]
 openclaw memory-pro export [--scope global] [--output memories.json]
 openclaw memory-pro import memories.json [--scope global] [--dry-run]
+openclaw memory-pro import-markdown [workspace-glob]
 openclaw memory-pro reembed --source-db /path/to/old-db [--batch-size 32] [--skip-existing]
 openclaw memory-pro upgrade [--dry-run] [--batch-size 10] [--no-llm] [--limit N] [--scope SCOPE]
 openclaw memory-pro migrate check|run|verify [--source /path]
+openclaw memory-pro reindex-fts [--scope global]
+openclaw memory-pro repair-summaries [--scope global] [--dry-run]
 ```
 
 OAuth login flow:
@@ -712,24 +856,33 @@ Useful for background agents (e.g. memory-distiller, cron workers) whose output 
 </details>
 
 <details>
-<summary><strong>Auto-recall timeout tuning</strong></summary>
+<summary><strong>Auto-recall configuration</strong></summary>
 
-Auto-recall has a configurable timeout (default 5s) to prevent stalling agent startup. If you're behind a proxy or using a high-latency embedding API, increase it:
-
-```json
-{ "plugins": { "entries": { "memory-lancedb-pro": { "config": { "autoRecallTimeoutMs": 8000 } } } } }
-```
-
-If auto-recall consistently times out, check your embedding API latency first. The timeout only affects the automatic injection path — manual `memory_recall` tool calls are not affected.
+| Field | Default | Description |
+|-------|---------|-------------|
+| `autoRecallMinLength` | `15` | Min prompt length to trigger auto-recall (CJK: 6) |
+| `autoRecallMinRepeated` | `8` | Min turns before same memory can be re-injected |
+| `autoRecallTimeoutMs` | `5000` | Timeout for the entire auto-recall pipeline |
+| `autoRecallMaxItems` | `3` | Max memories auto-injected per turn |
+| `autoRecallMaxChars` | `600` | Max total char budget for auto-injected summaries |
+| `autoRecallPerItemMaxChars` | `180` | Max char budget per injected memory summary |
+| `autoRecallMaxQueryLength` | `2000` | Max query length before truncation |
+| `maxRecallPerTurn` | `10` | Hard per-turn injection safety ceiling |
+| `recallMode` | `full` | `full` / `summary` (L0 only) / `adaptive` / `off` |
+| `autoRecallExcludeAgents` | `[]` | Blacklist: agents to skip for auto-recall |
+| `autoRecallIncludeAgents` | `[]` | Whitelist: only these agents receive auto-recall |
 
 </details>
 
 <details>
-<summary><strong>Session Memory</strong></summary>
+<summary><strong>Session Pipeline</strong></summary>
 
-- Triggered on `/new` command — saves previous session summary to LanceDB
-- Disabled by default (OpenClaw already has native `.jsonl` session persistence)
-- Configurable message count (default: 15)
+Controlled via `sessionStrategy`:
+- `none` (default) — no session pipeline; session summaries disabled
+- `systemSessionMemory` — triggers on `/new` command, saves previous session summary to LanceDB
+- `memoryReflection` — periodic reflection on recent conversation turns, stored as reflection entries
+
+Legacy `sessionMemory.enabled` is still supported and mapped: `true` → `systemSessionMemory`, `false` → `none`.
 
 See [docs/openclaw-integration-playbook.md](docs/openclaw-integration-playbook.md) for deployment modes and `/new` verification.
 
@@ -908,13 +1061,21 @@ openclaw doctor --fix # resolve any stale config after upgrade
 
 | Feature | Description |
 |---------|-------------|
-| **Smart Extraction** | LLM-powered 6-category extraction with L0/L1/L2 metadata. Falls back to regex when disabled. |
+| **Smart Extraction** | LLM-powered 6-category extraction with L0/L1/L2 metadata. Falls back to regex when disabled. Rate-limited: 10/hour global + 5-min per-session cooldown. |
+| **Admission Control** | A-MAC-style gating on the write path. Scores candidates on utility, novelty, recency, confidence, and type priors before persistence. |
 | **Lifecycle Scoring** | Weibull decay integrated into retrieval — high-frequency and high-importance memories rank higher. |
 | **Tier Management** | Three-tier system (Core → Working → Peripheral) with automatic promotion/demotion. |
 | **6-Dimension Consolidation** | Combines access patterns, confirmed use, contradiction penalties — compensating for LLM one-time importance scoring gaps. |
 | **Dynamic Confidence** | Real-time confidence adjustment per recall outcome: confirmed use boosts, contradictions penalize, long-term non-use decays. |
 | **3-Tier Background Pipeline** | Sweep (every start) → Consolidate (24h) → Compact (24h), fully automated background processing. |
 | **Memory Health Monitor** | Composite health metric; auto-recovers high-value archived memories when health drops below threshold. |
+| **Adaptive Recall** | `recallMode: "adaptive"` analyzes query intent to auto-select category and recall depth. |
+| **Session Compression** | Scores conversation texts before extraction, prioritizing corrections, decisions, and tool calls. |
+| **USER.md Boundary** | Route profile/canonical facts to USER.md only, keeping LanceDB free of agent-prompt-owned knowledge. |
+| **Markdown Mirror** | Dual-write memories to human-readable Markdown alongside LanceDB storage. |
+| **Advanced Debugging** | `memory_debug`, `memory_explain_rank` tools for retrieval diagnostics and rank explanation. |
+| **OAuth LLM Access** | `llm.auth: "oauth"` mode reuses existing ChatGPT/Codex login cache for extraction — no extra API key needed. |
+| **Metadata Repair** | `memory-pro repair-summaries` CLI command fixes L0/L1/L2 summaries inconsistent with text. |
 
 **Benchmark results**: When importance (LLM one-time score) doesn't correlate with actual usage, consolidation scoring achieves 100% precision@K (baseline: 0%), eliminates 46pp of noise, with 98%+ tier classification accuracy.
 
