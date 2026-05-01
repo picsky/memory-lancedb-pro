@@ -52,13 +52,12 @@ const DIAGNOSTIC_ARTIFACT_PATTERNS = [
 
 // Platform / infrastructure noise — system logs, channel metadata, message IDs.
 // These patterns catch operational noise that LLMs may extract as "events" or "entities".
+// NOTE: Bare ou_/msg_/om_ IDs are stripped at L1 input (AUTO_CAPTURE_MESSAGE_ID_RE),
+// so we only match when they appear in system-log context to avoid false-positive on
+// legitimate Bot OpenID entity references like "Bot OpenID=ou_c40de769...".
 const PLATFORM_NOISE_PATTERNS = [
   /model\s+(?:switched|changed)\s+to/i,
-  /\bou_[a-z0-9]{6,}\b/i,
-  /\b(?:msg_|om_)[a-z0-9]{6,}\b/i,
-  /exec\s+(?:completed|failed|started)/i,
-  /starting\s+channels/i,
-  /dispatching\s+to\s+agent/i,
+  /(?:exec\s+(?:completed|failed|started)|starting\s+channels|dispatching\s+to\s+agent)/i,
 ];
 
 /**
