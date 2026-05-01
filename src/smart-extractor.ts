@@ -1622,7 +1622,7 @@ export class SmartExtractor {
 const ONE_HOUR_MS = 60 * 60 * 1000;
 
 export interface ExtractionRateLimiterOptions {
-  /** Maximum number of extractions allowed per hour (default: 30) */
+  /** Maximum number of extractions allowed per hour (default: 10). */
   maxExtractionsPerHour?: number;
 }
 

@@ -988,8 +988,15 @@
             "type": "integer",
             "minimum": 1,
             "maximum": 200,
-            "default": 30,
-            "description": "Maximum number of auto-capture extractions allowed per hour"
+            "default": 10,
+            "description": "Maximum number of auto-capture extractions allowed per hour (default: 10, each extraction costs 3-9 API calls)"
+          },
+          "sessionCooldownMs": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 3600000,
+            "default": 300000,
+            "description": "Minimum milliseconds between extractions per session (default: 300000 = 5 min). Set 0 to disable per-session cooldown."
           }
         }
       }

@@ -1702,10 +1702,12 @@ const pluginVersion = getPluginVersion();
 // Plugin Definition
 // ============================================================================
 
-// WeakSet keyed by API instance — each distinct API object tracks its own initialized state.
-// Using WeakSet instead of a module-level boolean avoids the "second register() call skips
-// hook/tool registration for the new API instance" regression that rwmjhb identified.
-let _registeredApis = new WeakSet<OpenClawPluginApi>();
+// Module-level boolean: ensures register() body runs exactly once per process
+// lifecycle. OpenClaw calls register() with a different api object each time
+// (5× at startup, 4× per scope cache-miss), so a WeakSet keyed by api identity
+// never matched. The singleton state (_singletonState) handles resource reuse;
+// this guard prevents the register() body from re-executing.
+let _registerBodyRan = false;
 
 // ============================================================================
 // Hook Event Deduplication (Phase 1)
@@ -1771,6 +1773,8 @@ interface PluginSingletonState {
   autoCaptureSeenTextCount: Map<string, number>;
   autoCapturePendingIngressTexts: Map<string, string[]>;
   autoCaptureRecentTexts: Map<string, string[]>;
+  /** Per-session extraction cooldown: sessionKey -> last extraction timestamp. */
+  extractionCooldown: Map<string, number>;
 }
 
 let _singletonState: PluginSingletonState | null = null;
@@ -1918,6 +1922,7 @@ function _initPluginState(api: OpenClawPluginApi): PluginSingletonState {
   const autoCaptureSeenTextCount = new Map<string, number>();
   const autoCapturePendingIngressTexts = new Map<string, string[]>();
   const autoCaptureRecentTexts = new Map<string, string[]>();
+  const extractionCooldown = new Map<string, number>();
 
   const logReg = isCliMode() ? api.logger.debug : api.logger.info;
   logReg(
@@ -1946,6 +1951,7 @@ function _initPluginState(api: OpenClawPluginApi): PluginSingletonState {
     autoCaptureSeenTextCount,
     autoCapturePendingIngressTexts,
     autoCaptureRecentTexts,
+    extractionCooldown,
     metricsCollector,
   };
 }
@@ -1958,12 +1964,12 @@ const memoryLanceDBProPlugin = {
   kind: "memory" as const,
 
   register(api: OpenClawPluginApi) {
-    // Idempotent guard: skip re-init if this exact API instance has already registered.
-    if (_registeredApis.has(api)) {
+    // Idempotent guard: skip re-init if register() has already run.
+    if (_registerBodyRan) {
       api.logger.debug?.("memory-lancedb-pro: register() called again — skipping re-init (idempotent)");
       return;
     }
-    _registeredApis.add(api);
+    _registerBodyRan = true;
 
     // Parse and validate configuration
     // ========================================================================
@@ -1994,6 +2000,7 @@ const memoryLanceDBProPlugin = {
       autoCaptureSeenTextCount,
       autoCapturePendingIngressTexts,
       autoCaptureRecentTexts,
+      extractionCooldown,
       metricsCollector,
     } = _singletonState;
 
@@ -2207,12 +2214,6 @@ const memoryLanceDBProPlugin = {
       return next;
     };
 
-    const logReg = isCliMode() ? api.logger.debug : api.logger.info;
-    logReg(
-      `memory-lancedb-pro@${pluginVersion}: plugin registered (db: ${resolvedDbPath}, model: ${config.embedding.model || "text-embedding-3-small"}, smartExtraction: ${smartExtractor ? 'ON' : 'OFF'})`
-    );
-    logReg(`memory-lancedb-pro: diagnostic build tag loaded (${DIAG_BUILD_TAG})`);
-
     // Dual-memory model warning: help users understand the two-layer architecture
     // Runs synchronously and logs warnings; does NOT block gateway startup.
     api.logger.info(
@@ -2317,7 +2318,7 @@ const memoryLanceDBProPlugin = {
 
     // Auto-compaction at gateway_start (if enabled, respects cooldown)
     if (config.memoryCompaction?.enabled) {
-      api.on("gateway_start", () => {
+      const runCompactionOnce = () => {
         const compactionStateFile = join(
           dirname(resolvedDbPath),
           ".compaction-state.json",
@@ -2355,12 +2356,19 @@ const memoryLanceDBProPlugin = {
           .catch((err) => {
             api.logger.warn(`memory-compactor [auto]: failed: ${String(err)}`);
           });
-      });
+      };
+
+      api.on("gateway_start", runCompactionOnce);
+
+      // Fallback: trigger compaction after register() completes, in case
+      // the gateway_start event has already fired before the hook runner
+      // was initialized (known OpenClaw timing issue).
+      setImmediate(runCompactionOnce);
     }
 
     // Background pipeline: sweep + consolidation + compaction (fire-and-forget)
     if (config.memoryConsolidation?.enabled || config.memorySweep) {
-      api.on("gateway_start", () => {
+      const runBackgroundPipelineOnce = () => {
         const stateDir = dirname(resolvedDbPath);
         const consolidationCfg: ConsolidationConfig = {
           ...DEFAULT_CONSOLIDATION_CONFIG,
@@ -2399,7 +2407,14 @@ const memoryLanceDBProPlugin = {
         }).catch((err) => {
           api.logger.warn(`background-pipeline [auto]: failed: ${String(err)}`);
         });
-      });
+      };
+
+      api.on("gateway_start", runBackgroundPipelineOnce);
+
+      // Fallback: trigger background pipeline after register() completes, in case
+      // the gateway_start event has already fired before the hook runner
+      // was initialized (known OpenClaw timing issue).
+      setImmediate(runBackgroundPipelineOnce);
     }
 
     // ========================================================================
@@ -2635,9 +2650,15 @@ const memoryLanceDBProPlugin = {
           });
 
           if (governanceEligible.length === 0) {
-            api.logger.info?.(
-              `memory-lancedb-pro: auto-recall skipped after governance filters (hits=${results.length}, dedupFiltered=${dedupFilteredCount}, stateFiltered=${stateFilteredCount}, suppressedFiltered=${suppressedFilteredCount})`,
-            );
+            if (suppressedFilteredCount > 0) {
+              api.logger.warn?.(
+                `memory-lancedb-pro: all ${results.length} recalled memories filtered by governance (state=${stateFilteredCount}, suppressed=${suppressedFilteredCount}). Suppressed memories need ${minRepeated} more turns before recall eligibility.`,
+              );
+            } else {
+              api.logger.info?.(
+                `memory-lancedb-pro: auto-recall skipped after governance filters (hits=${results.length}, dedupFiltered=${dedupFilteredCount}, stateFiltered=${stateFilteredCount}, suppressedFiltered=${suppressedFilteredCount})`,
+              );
+            }
             return;
           }
 
@@ -2764,7 +2785,12 @@ const memoryLanceDBProPlugin = {
               const nextBadRecallCount = staleInjected
                 ? meta.bad_recall_count + 1
                 : meta.bad_recall_count;
-              const shouldSuppress = nextBadRecallCount >= 3 && minRepeated > 0;
+              const shouldSuppress = nextBadRecallCount >= 5 && minRepeated > 0;
+              if (shouldSuppress && nextBadRecallCount === 5) {
+                api.logger.info(
+                  `memory-lancedb-pro: suppressing memory ${item.id.slice(0, 8)} (bad_recall_count=${nextBadRecallCount}, suppressed for ${minRepeated} turns) abstract=${item.meta.l0_abstract?.slice(0, 80)}`,
+                );
+              }
               await store.patchMetadata(
                 item.id,
                 {
@@ -2866,6 +2892,19 @@ const memoryLanceDBProPlugin = {
           if (extractionRateLimiter.isRateLimited()) {
             api.logger.debug(
               `memory-lancedb-pro: auto-capture skipped (rate limited: ${extractionRateLimiter.getRecentCount()} extractions in last hour)`,
+            );
+            return;
+          }
+
+          // Per-session cooldown: prevent rapid-fire turns from each triggering
+          // extraction. Default 5 minutes between extractions per session.
+          const sessionKeyForCooldown = ctx?.sessionKey || (event as any).sessionKey || "unknown";
+          const cooldownMs = config.extractionThrottle?.sessionCooldownMs ?? 5 * 60 * 1000;
+          const lastExtraction = extractionCooldown.get(sessionKeyForCooldown) ?? 0;
+          const elapsed = Date.now() - lastExtraction;
+          if (elapsed < cooldownMs) {
+            api.logger.debug(
+              `memory-lancedb-pro: auto-capture skipped (session cooldown: ${Math.round(elapsed / 1000)}s since last, need ${Math.round(cooldownMs / 1000)}s)`,
             );
             return;
           }
@@ -3052,6 +3091,8 @@ const memoryLanceDBProPlugin = {
               );
               // Charge rate limiter only after successful extraction
               extractionRateLimiter.recordExtraction();
+              extractionCooldown.set(sessionKeyForCooldown, Date.now());
+              pruneMapIfOver(extractionCooldown, AUTO_CAPTURE_MAP_MAX_ENTRIES);
               if (stats.created > 0 || stats.merged > 0) {
                 api.logger.info(
                   `memory-lancedb-pro: smart-extracted ${stats.created} created, ${stats.merged} merged, ${stats.skipped} skipped for agent ${agentId}`
@@ -4416,7 +4457,7 @@ export { getDefaultMdMirrorDir };
  * @public
  */
 export function resetRegistration() {
-  _registeredApis = new WeakSet<OpenClawPluginApi>();
+  _registerBodyRan = false;
   _singletonState = null;
   _hookEventDedup.clear();
 }

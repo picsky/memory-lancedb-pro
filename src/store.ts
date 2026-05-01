@@ -1504,4 +1504,16 @@ export class MemoryStore {
         }),
       );
   }
+
+  /**
+   * Fetch memories for consolidation evaluation. Delegates to
+   * `fetchForCompaction` — both need the same data shape (full metadata + vector).
+   */
+  async fetchForConsolidation(
+    maxTimestamp: number,
+    scopeFilter?: string[],
+    limit = 200,
+  ): Promise<MemoryEntry[]> {
+    return this.fetchForCompaction(maxTimestamp, scopeFilter, limit);
+  }
 }

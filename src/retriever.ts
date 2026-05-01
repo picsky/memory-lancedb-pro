@@ -127,6 +127,8 @@ export interface RetrievalResult extends MemorySearchResult {
     fused?: { score: number };
     reranked?: { score: number };
   };
+  /** Internal flag: result was returned via hardMinScore fallback (below cutoff). */
+  _fallback?: boolean;
 }
 
 export interface RetrievalDiagnostics {
@@ -762,9 +764,14 @@ export class MemoryRetriever {
       if (diagnostics) diagnostics.stageCounts.afterLengthNorm = lengthNormalized.length;
       const hardFiltered = lengthNormalized.filter((r) => r.score >= this.config.hardMinScore);
       if (diagnostics) diagnostics.stageCounts.afterHardMinScore = hardFiltered.length;
+      // Fallback: if hard cutoff eliminates everything, return top candidates
+      // so the system degrades gracefully instead of returning zero results.
+      const postHard = hardFiltered.length > 0
+        ? hardFiltered
+        : this.applyHardCutoffFallback(lengthNormalized, 3);
       const timeOrDecayRanked = this.decayEngine
-        ? this.applyDecayBoost(hardFiltered)
-        : this.applyTimeDecay(hardFiltered);
+        ? this.applyDecayBoost(postHard)
+        : this.applyTimeDecay(postHard);
       if (diagnostics) diagnostics.stageCounts.afterTimeDecay = timeOrDecayRanked.length;
       const denoised = this.config.filterNoise
         ? filterNoise(timeOrDecayRanked, (r) => r.entry.text)
@@ -863,12 +870,16 @@ export class MemoryRetriever {
     const hardFiltered = lengthNormalized.filter((r) => r.score >= this.config.hardMinScore);
     trace?.endStage(hardFiltered.map((r) => r.entry.id), hardFiltered.map((r) => r.score));
     if (diagnostics) diagnostics.stageCounts.afterHardMinScore = hardFiltered.length;
+    // Fallback: if hard cutoff eliminates everything, return top candidates.
+    const postHard = hardFiltered.length > 0
+      ? hardFiltered
+      : this.applyHardCutoffFallback(lengthNormalized, 3);
 
     const decayStageName = this.decayEngine ? "decay_boost" : "time_decay";
-    trace?.startStage(decayStageName, hardFiltered.map((r) => r.entry.id));
+    trace?.startStage(decayStageName, postHard.map((r) => r.entry.id));
     const lifecycleRanked = this.decayEngine
-      ? this.applyDecayBoost(hardFiltered)
-      : this.applyTimeDecay(hardFiltered);
+      ? this.applyDecayBoost(postHard)
+      : this.applyTimeDecay(postHard);
     trace?.endStage(lifecycleRanked.map((r) => r.entry.id), lifecycleRanked.map((r) => r.score));
     if (diagnostics) diagnostics.stageCounts.afterTimeDecay = lifecycleRanked.length;
 
@@ -1047,12 +1058,16 @@ export class MemoryRetriever {
       const hardFiltered = lengthNormalized.filter((r) => r.score >= this.config.hardMinScore);
       trace?.endStage(hardFiltered.map((r) => r.entry.id), hardFiltered.map((r) => r.score));
       if (diagnostics) diagnostics.stageCounts.afterHardMinScore = hardFiltered.length;
+      // Fallback: if hard cutoff eliminates everything, return top candidates.
+      const postHard = hardFiltered.length > 0
+        ? hardFiltered
+        : this.applyHardCutoffFallback(lengthNormalized, 3);
 
       const decayStageName = this.decayEngine ? "decay_boost" : "time_decay";
-      trace?.startStage(decayStageName, hardFiltered.map((r) => r.entry.id));
+      trace?.startStage(decayStageName, postHard.map((r) => r.entry.id));
       const lifecycleRanked = this.decayEngine
-        ? this.applyDecayBoost(hardFiltered)
-        : this.applyTimeDecay(hardFiltered);
+        ? this.applyDecayBoost(postHard)
+        : this.applyTimeDecay(postHard);
       trace?.endStage(lifecycleRanked.map((r) => r.entry.id), lifecycleRanked.map((r) => r.score));
       if (diagnostics) diagnostics.stageCounts.afterTimeDecay = lifecycleRanked.length;
 
@@ -1365,6 +1380,17 @@ export class MemoryRetriever {
   }
 
   /**
+   * Graceful degradation fallback: when hardMinScore eliminates all results,
+   * return the top-N highest-scoring candidates with a _fallback flag.
+   * This prevents the system from returning zero results due to score
+   * compounding (importanceWeight × lengthNorm pushing everything below cutoff).
+   */
+  private applyHardCutoffFallback(results: RetrievalResult[], topN: number): RetrievalResult[] {
+    if (results.length === 0) return results;
+    return results.slice(0, topN).map(r => ({ ...r, _fallback: true }));
+  }
+
+  /**
    * Apply recency boost: newer memories get a small score bonus.
    * This ensures corrections/updates naturally outrank older entries
    * when semantic similarity is close.
@@ -1396,10 +1422,13 @@ export class MemoryRetriever {
    * This ensures critical memories (importance=1.0) outrank casual ones (importance=0.5)
    * when semantic similarity is close.
    * Formula: score *= (baseWeight + (1 - baseWeight) * importance)
-   * With baseWeight=0.7: importance=1.0 → ×1.0, importance=0.5 → ×0.85, importance=0.0 → ×0.7
+   * With baseWeight=0.85: importance=1.0 → ×1.0, importance=0.7 → ×0.955, importance=0.0 → ×0.85
+   *
+   * Floor raised from 0.7 to 0.85 to prevent compounding with lengthNorm
+   * from pushing scores below hardMinScore (see #retrieval-score-degradation).
    */
   private applyImportanceWeight(results: RetrievalResult[]): RetrievalResult[] {
-    const baseWeight = 0.7;
+    const baseWeight = 0.85;
     const weighted = results.map((r) => {
       const importance = r.entry.importance ?? 0.7;
       const factor = baseWeight + (1 - baseWeight) * importance;
@@ -1450,11 +1479,14 @@ export class MemoryRetriever {
       //   anchor (500) → 1.0, 800 → 0.75, 1000 → 0.67, 1500 → 0.56, 2000 → 0.50
       // This prevents long, keyword-rich entries from dominating top-k
       // while keeping their scores reasonable.
+      //
+      // Floor raised from 0.3 to 0.6 to prevent compounding with importanceWeight
+      // from pushing scores below hardMinScore (see #retrieval-score-degradation).
       const logRatio = Math.log2(Math.max(ratio, 1)); // no boost for short entries
       const factor = 1 / (1 + 0.5 * logRatio);
       return {
         ...r,
-        score: clamp01(r.score * factor, r.score * 0.3),
+        score: clamp01(r.score * factor, r.score * 0.6),
       };
     });
 

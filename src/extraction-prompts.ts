@@ -10,125 +10,65 @@ export function buildExtractionPrompt(
   conversationText: string,
   user: string,
 ): string {
-  return `Analyze the following session context and extract memories worth long-term preservation.
+  return `You are a memory extraction assistant. Analyze the conversation and extract memories worth long-term preservation for the user "${user}".
 
-User: ${user}
+**Rules**:
+- Output language MUST match the dominant language of the conversation.
+- Only extract user-specific information, not general knowledge.
+- Abstract must be 10-30 characters, include concrete nouns (names, products, tech).
+- Maximum 5 memories per extraction.
+- NEVER extract: system messages, metadata, timestamps, greetings, recall queries, or tool output.
+- Each memory is ONE fact — do NOT merge unrelated facts into a single memory.
 
-Target Output Language: auto (detect from recent messages)
+**Categories**:
+| category      | What it is                        | Test phrase              |
+|---------------|-----------------------------------|--------------------------|
+| profile       | User identity, role, background   | "User is..."             |
+| preferences   | Preferences, habits, tendencies   | "User prefers..."        |
+| entities      | Projects, tools, orgs, people     | "Project X uses..."      |
+| events        | Decisions, milestones, meetings   | "User decided/completed" |
+| cases         | Problem → solution pairs          | "When X fails, do Y"     |
+| patterns      | Reusable processes or workflows   | "To handle X, do Y..."   |
 
-## Recent Conversation
-${conversationText}
-
-# Memory Extraction Criteria
-
-## What is worth remembering?
-- Personalized information: Information specific to this user, not general domain knowledge
-- Long-term validity: Information that will still be useful in future sessions
-- Specific and clear: Has concrete details, not vague generalizations
-
-## What is NOT worth remembering?
-- General knowledge that anyone would know
-- System/platform metadata: message IDs, sender IDs, timestamps, channel info, JSON envelopes (e.g. "System: [timestamp] Feishu...", "message_id", "sender_id", "ou_xxx") — these are infrastructure noise, NEVER extract them
-- Temporary information: One-time questions or conversations
-- Vague information: "User has questions about a feature" (no specific details)
-- Tool output, error logs, or boilerplate
-- Runtime scaffolding or orchestration wrappers such as "[Subagent Context]", "[Subagent Task]", bootstrap wrappers, task envelopes, or agent instructions — these are execution metadata, NEVER store them as memories
-- Recall queries / meta-questions: "Do you remember X?", "你还记得X吗?", "你知道我喜欢什么吗" — these are retrieval requests, NOT new information to store
-- Degraded or incomplete references: If the user mentions something vaguely ("that thing I said"), do NOT invent details or create a hollow memory
-
-# Memory Classification
-
-## Core Decision Logic
-
-| Question | Answer | Category |
-|----------|--------|----------|
-| Who is the user? | Identity, attributes | profile |
-| What does the user prefer? | Preferences, habits | preferences |
-| What is this thing? | Person, project, organization | entities |
-| What happened? | Decision, milestone | events |
-| How was it solved? | Problem + solution | cases |
-| What is the process? | Reusable steps | patterns |
-
-## Precise Definition
-
-**profile** - User identity (static attributes). Test: "User is..."
-**preferences** - User preferences (tendencies). Test: "User prefers/likes..."
-**entities** - Continuously existing nouns. Test: "XXX's state is..."
-**events** - Things that happened. Test: "XXX did/completed..."
-**cases** - Problem + solution pairs. Test: Contains "problem -> solution"
-**patterns** - Reusable processes. Test: Can be used in "similar situations"
-
-## Common Confusion
-- "Plan to do X" -> events (action, not entity)
-- "Project X status: Y" -> entities (describes entity)
-- "User prefers X" -> preferences (not profile)
-- "Encountered problem A, used solution B" -> cases (not events)
-- "General process for handling certain problems" -> patterns (not cases)
-
-# Three-Level Structure
-
-Each memory contains three levels:
-
-**abstract (L0)**: One-liner index
-- Merge types (preferences/entities/profile/patterns): \`[Merge key]: [Description]\`
-- Independent types (events/cases): Specific description
-
-**overview (L1)**: Structured Markdown summary with category-specific headings
-
-**content (L2)**: Full narrative with background and details
-
-# Few-shot Examples
+**Examples**:
 
 ## profile
 \`\`\`json
-{
-  "category": "profile",
-  "abstract": "User basic info: AI development engineer, 3 years LLM experience",
-  "overview": "## Background\\n- Occupation: AI development engineer\\n- Experience: 3 years LLM development\\n- Tech stack: Python, LangChain",
-  "content": "User is an AI development engineer with 3 years of LLM application development experience."
-}
+{"category":"profile","abstract":"用户是AI开发工程师，3年LLM经验","overview":"## 身份\\n- 职业: AI开发工程师\\n- 经验: 3年LLM开发","content":"用户是一名AI开发工程师，有3年LLM应用开发经验。"}
 \`\`\`
 
 ## preferences
 \`\`\`json
-{
-  "category": "preferences",
-  "abstract": "Python code style: No type hints, concise and direct",
-  "overview": "## Preference Domain\\n- Language: Python\\n- Topic: Code style\\n\\n## Details\\n- No type hints\\n- Concise function comments\\n- Direct implementation",
-  "content": "User prefers Python code without type hints, with concise function comments."
-}
+{"category":"preferences","abstract":"Python代码风格：无类型注解，简洁直接","overview":"## 偏好领域\\n- 语言: Python\\n- 主题: 代码风格\\n\\n## 细节\\n- 不使用类型注解\\n- 函数注释简洁","content":"用户偏好Python代码不使用类型注解，函数注释简洁直接。"}
+\`\`\`
+
+## entities
+\`\`\`json
+{"category":"entities","abstract":"项目使用Kong网关+PostgreSQL 16+PgBouncer","overview":"## 项目基础设施\\n- API网关: Kong\\n- 数据库: PostgreSQL 16\\n- 连接池: PgBouncer\\n- 部署: AWS us-east-1","content":"项目API网关使用Kong，部署在AWS us-east-1。数据库是PostgreSQL 16，使用PgBouncer做连接池。"}
+\`\`\`
+
+## events
+\`\`\`json
+{"category":"events","abstract":"用户向LanceDB提交了BigInt问题的GitHub issue","overview":"## 事件\\n- 时间: 近期\\n- 内容: 向LanceDB GitHub仓库报告了BigInt返回值问题","content":"用户在使用LanceDB 0.26时遇到BigInt问题，已向GitHub提交issue。"}
 \`\`\`
 
 ## cases
 \`\`\`json
-{
-  "category": "cases",
-  "abstract": "LanceDB BigInt numeric handling issue",
-  "overview": "## Problem\\nLanceDB 0.26+ returns BigInt for numeric columns\\n\\n## Solution\\nCoerce values with Number(...) before arithmetic",
-  "content": "When LanceDB returns BigInt values, wrap them with Number() before doing arithmetic operations."
-}
+{"category":"cases","abstract":"LanceDB BigInt返回值问题","overview":"## 问题\\nLanceDB 0.26+数值列返回BigInt类型\\n\\n## 解决方案\\n用Number()包装后再做算术运算","content":"当LanceDB返回BigInt值时，用Number()包装后再进行算术运算可解决兼容性问题。"}
 \`\`\`
 
-# Output Format
+## patterns
+\`\`\`json
+{"category":"patterns","abstract":"大项目启动时先清理缓存再加载monorepo","overview":"## 可复用流程\\n- 场景: 打开大型monorepo项目\\n- 步骤: 清理缓存→重新加载→验证索引","content":"打开大型monorepo项目时，先清理编辑器缓存再重新加载，可避免加载卡顿。"}
+\`\`\`
 
-Return JSON:
-{
-  "memories": [
-    {
-      "category": "profile|preferences|entities|events|cases|patterns",
-      "abstract": "One-line index",
-      "overview": "Structured Markdown summary",
-      "content": "Full narrative"
-    }
-  ]
-}
+**Conversation**:
+${conversationText}
 
-Notes:
-- Output language should match the dominant language in the conversation
-- Only extract truly valuable personalized information
-- If nothing worth recording, return {"memories": []}
-- Maximum 5 memories per extraction
-- Preferences should be aggregated by topic`;
+**Output**: Return JSON ONLY:
+{"memories":[{"category":"profile|preferences|entities|events|cases|patterns","abstract":"one-liner with concrete nouns","overview":"structured markdown overview","content":"full narrative"}]}
+
+If nothing worth recording, return {"memories": []}.`;
 }
 
 export function buildDedupPrompt(

@@ -13,6 +13,7 @@
  * The sweep phase always runs; consolidate and compact are gated by cooldown.
  */
 
+import { join } from "path";
 import type { MemoryStore } from "./store.js";
 import type { MemoryEntry } from "./store.js";
 import {
