@@ -10,7 +10,9 @@ const AUTO_CAPTURE_INBOUND_META_SENTINELS = [
 const AUTO_CAPTURE_SESSION_RESET_PREFIX =
   "A new session was started via /new or /reset. Execute your Session Startup sequence now";
 const AUTO_CAPTURE_ADDRESSING_PREFIX_RE = /^(?:<@!?[0-9]+>|@[A-Za-z0-9_.-]+)\s*/;
-const AUTO_CAPTURE_SYSTEM_EVENT_LINE_RE = /^System:\s*\[[^\n]*?\]\s*Exec\s+(?:completed|failed|started)\b.*$/gim;
+const AUTO_CAPTURE_SYSTEM_EVENT_LINE_RE = /^System:\s*\[[^\n]*?\]\s*.*$/gim;
+const AUTO_CAPTURE_MESSAGE_ID_RE = /\b(?:ou_|msg_|om_)[a-zA-Z0-9]+\b/g;
+const AUTO_CAPTURE_BARE_JSON_META_RE = /\{[\s\S]*?"(?:chat_id|message_id|sender_id|open_chat_id)"[\s\S]*?\}/g;
 const AUTO_CAPTURE_RUNTIME_WRAPPER_LINE_RE = /^\[(?:Subagent Context|Subagent Task)\]\s*/i;
 const AUTO_CAPTURE_RUNTIME_WRAPPER_PREFIX_RE = /^\[(?:Subagent Context|Subagent Task)\]/i;
 const AUTO_CAPTURE_RUNTIME_WRAPPER_BOILERPLATE_RE =
@@ -35,6 +37,10 @@ function stripLeadingInboundMetadata(text: string): string {
     const before = normalized;
     normalized = normalized.replace(AUTO_CAPTURE_SYSTEM_EVENT_LINE_RE, "\n");
     normalized = normalized.replace(AUTO_CAPTURE_INBOUND_META_BLOCK_RE, "\n");
+    // Strip bare JSON objects that contain message metadata fields (no fenced code block)
+    normalized = normalized.replace(AUTO_CAPTURE_BARE_JSON_META_RE, "\n");
+    // Strip residual message IDs (ou_xxx, msg_xxx, om_xxx)
+    normalized = normalized.replace(AUTO_CAPTURE_MESSAGE_ID_RE, "");
     normalized = normalized.replace(/\n{3,}/g, "\n\n").trim();
     if (normalized === before.trim()) {
       break;
@@ -121,7 +127,10 @@ function stripLeadingRuntimeWrappers(text: string): string {
 }
 
 export function stripAutoCaptureInjectedPrefix(role: string, text: string): string {
-  if (role !== "user") {
+  // Apply the same cleaning pipeline to user and assistant messages.
+  // Assistant messages may inherit System: lines from the conversation context
+  // or quote system events that should not be captured as memories.
+  if (role !== "user" && role !== "assistant") {
     return text.trim();
   }
 

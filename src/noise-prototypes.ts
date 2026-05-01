@@ -32,6 +32,14 @@ const BUILTIN_NOISE_TEXTS: readonly string[] = [
     "Hello, how are you doing today?",
     "Hi there, what's up",
     "新的一天开始了",
+    // Platform / system noise (2026-05-01 added)
+    "Model switched to qwen3.6-plus",
+    "Model changed",
+    "Feishu DM",
+    "starting channels",
+    "dispatching to agent",
+    "Exec completed",
+    "Exec failed",
 ];
 
 // ============================================================================

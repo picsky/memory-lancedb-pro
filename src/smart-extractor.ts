@@ -193,9 +193,11 @@ export function stripEnvelopeMetadata(text: string): string {
 
   let cleaned = result.join("\n");
 
-  // 1. Strip "System: [timestamp] Channel..." lines
+  // 1. Strip "System: [timestamp] ..." lines — all platform/system log lines,
+  //    including Model switched, Feishu DM, starting channels, heartbeat, etc.
+  //    Previously only matched Channel[xxx] format, missing non-channel logs.
   cleaned = cleaned.replace(
-    /^System:\s*\[[\d\-: +GMT]+\]\s+\S+\[.*?\].*$/gm,
+    /^System:\s*\[[^\]]*\]\s*.*$/gm,
     "",
   );
 
@@ -666,6 +668,14 @@ export class SmartExtractor {
         noiseAbstractCount++;
         this.debugLog(
           `memory-lancedb-pro: smart-extractor: dropping candidate due to noise abstract category=${category} abstract=${JSON.stringify(abstract.slice(0, 120))}`,
+        );
+        continue;
+      }
+      // Also reject if content is purely platform noise (e.g. "Model switched to X")
+      if (content && isNoise(content)) {
+        noiseAbstractCount++;
+        this.debugLog(
+          `memory-lancedb-pro: smart-extractor: dropping candidate with noise content category=${category} abstract=${JSON.stringify(abstract.slice(0, 80))}`,
         );
         continue;
       }

@@ -1340,7 +1340,9 @@ const MEMORY_TRIGGERS = [
   /zapamatuj si|pamatuj|remember/i,
   /preferuji|radši|nechci|prefer/i,
   /rozhodli jsme|budeme používat/i,
-  /\b(we )?decided\b|we'?ll use|we will use|switch(ed)? to|migrate(d)? to|going forward|from now on/i,
+  /\b(we|i|you)\s+(decided|switch(ed)?|migrate(d)?|will use)\b/i,
+  /\bwe'?ll use\b|\bwe will use\b/i,
+  /\b(going forward|from now on)\b/i,
   /\+\d{10,}/,
   /[\w.-]+@[\w.-]+\.\w+/,
   /můj\s+\w+\s+je|je\s+můj/i,
@@ -1369,6 +1371,9 @@ const CAPTURE_EXCLUDE_PATTERNS = [
 
 export function shouldCapture(text: string): boolean {
   let s = text.trim();
+
+  // Strip all System: lines (platform logs like Model switched, Feishu DM, etc.)
+  s = s.replace(/^System:\s*\[[^\]]*\]\s*.*$/gim, "");
 
   // Strip OpenClaw metadata headers (Conversation info or Sender)
   const metadataPattern = /^(Conversation info|Sender) \(untrusted metadata\):[\s\S]*?\n\s*\n/gim;

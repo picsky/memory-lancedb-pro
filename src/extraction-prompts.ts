@@ -17,8 +17,14 @@ export function buildExtractionPrompt(
 - Only extract user-specific information, not general knowledge.
 - Abstract must be 10-30 characters, include concrete nouns (names, products, tech).
 - Maximum 5 memories per extraction.
-- NEVER extract: system messages, metadata, timestamps, greetings, recall queries, or tool output.
 - Each memory is ONE fact — do NOT merge unrelated facts into a single memory.
+- NEVER extract:
+  - Lines starting with "System:" (platform logs, model switches, channel info)
+  - Message IDs (ou_xxx, msg_xxx, om_xxx) or user IDs
+  - Platform names (Feishu, Telegram, Discord, Slack) as infrastructure context
+  - Model switching events ("Model switched to X")
+  - Channel metadata, heartbeat, dispatching logs
+  - Timestamps, greetings, recall queries, tool output
 
 **Categories**:
 | category      | What it is                        | Test phrase              |

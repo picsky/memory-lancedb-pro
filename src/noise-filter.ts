@@ -50,6 +50,17 @@ const DIAGNOSTIC_ARTIFACT_PATTERNS = [
   /\bno explicit solution\b/i,
 ];
 
+// Platform / infrastructure noise — system logs, channel metadata, message IDs.
+// These patterns catch operational noise that LLMs may extract as "events" or "entities".
+const PLATFORM_NOISE_PATTERNS = [
+  /model\s+(?:switched|changed)\s+to/i,
+  /\bou_[a-z0-9]{6,}\b/i,
+  /\b(?:msg_|om_)[a-z0-9]{6,}\b/i,
+  /exec\s+(?:completed|failed|started)/i,
+  /starting\s+channels/i,
+  /dispatching\s+to\s+agent/i,
+];
+
 /**
  * Envelope noise patterns — Discord/channel metadata headers and blocks
  * that have zero informational value for memory extraction.
@@ -95,6 +106,7 @@ export function isNoise(text: string, options: NoiseFilterOptions = {}): boolean
   if (opts.filterMetaQuestions && META_QUESTION_PATTERNS.some(p => p.test(trimmed))) return true;
   if (opts.filterBoilerplate && BOILERPLATE_PATTERNS.some(p => p.test(trimmed))) return true;
   if (DIAGNOSTIC_ARTIFACT_PATTERNS.some(p => p.test(trimmed))) return true;
+  if (PLATFORM_NOISE_PATTERNS.some(p => p.test(trimmed))) return true;
 
   return false;
 }
