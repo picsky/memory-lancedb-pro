@@ -262,6 +262,7 @@ interface PluginConfig {
   extractionThrottle?: {
     skipLowValue?: boolean;
     maxExtractionsPerHour?: number;
+    sessionCooldownMs?: number;
   };
   recallPrefix?: {
     /**
@@ -4440,8 +4441,12 @@ export function parsePluginConfig(value: unknown): PluginConfig {
               typeof (cfg.extractionThrottle as Record<string, unknown>).maxExtractionsPerHour === "number"
                 ? ((cfg.extractionThrottle as Record<string, unknown>).maxExtractionsPerHour as number)
                 : 30,
+            sessionCooldownMs:
+              typeof (cfg.extractionThrottle as Record<string, unknown>).sessionCooldownMs === "number"
+                ? ((cfg.extractionThrottle as Record<string, unknown>).sessionCooldownMs as number)
+                : 300000,
           }
-        : { skipLowValue: false, maxExtractionsPerHour: 30 },
+        : { skipLowValue: false, maxExtractionsPerHour: 30, sessionCooldownMs: 300000 },
     recallPrefix:
       typeof cfg.recallPrefix === "object" && cfg.recallPrefix !== null
         ? {
