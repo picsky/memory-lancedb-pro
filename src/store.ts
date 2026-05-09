@@ -3,6 +3,7 @@
  */
 
 import type * as LanceDB from "@lancedb/lancedb";
+import * as lancedb from "@lancedb/lancedb";
 import { randomUUID } from "node:crypto";
 import {
   existsSync,
@@ -49,13 +50,6 @@ export interface MetadataPatch {
   [key: string]: unknown;
 }
 
-// ============================================================================
-// LanceDB Dynamic Import
-// ============================================================================
-
-let lancedbImportPromise: Promise<typeof import("@lancedb/lancedb")> | null =
-  null;
-
 // =========================================================================
 // Cross-Process File Lock (proper-lockfile)
 // =========================================================================
@@ -74,27 +68,12 @@ export function __setLockfileModuleForTests(module: any): void {
   lockfileModule = module;
 }
 
-export const loadLanceDB = async (): Promise<
-  typeof import("@lancedb/lancedb")
-> => {
-  if (!lancedbImportPromise) {
-    // Use require() instead of dynamic import() because @lancedb/lancedb is a
-    // CommonJS module with native bindings. On Windows, dynamic import() can
-    // fail with ERR_UNSUPPORTED_ESM_URL_SCHEME when resolving native .node files
-    // via file:// URLs. require() uses the Node.js module resolution path which
-    // correctly locates platform-specific binaries.
-    lancedbImportPromise = Promise.resolve(require("@lancedb/lancedb"));
-  }
-  try {
-    return await lancedbImportPromise;
-  } catch (err) {
-    throw new Error(
-      `memory-lancedb-pro: failed to load LanceDB. ` +
-        `Ensure the package is installed: npm install @lancedb/lancedb. ` +
-        `Details: ${String(err)}`,
-      { cause: err },
-    );
-  }
+/**
+ * Return the already-imported LanceDB module.
+ * Uses a static top-level import so jiti can transpile it properly.
+ */
+export const loadLanceDB = async (): Promise<typeof import("@lancedb/lancedb")> => {
+  return lancedb;
 };
 
 // ============================================================================
